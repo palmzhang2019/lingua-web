@@ -24,11 +24,11 @@ flowchart LR
 
 ### 项目简介
 
-Lingua Web 是一个自用日语学习 Web 原型，用三天时间完成了从材料上传到智能学习循环的全部核心流程。用户上传 TXT 或 Markdown 格式的日语学习材料，系统自动提取语法点和词汇，然后引导用户完成包含翻译题和选择题的完整学习循环，并自动追踪薄弱项以优化后续复习。
+Lingua Web 是一个自用日语学习 Web 原型，用三天时间完成了从材料上传到智能学习循环的全部核心流程。用户上传 TXT、Markdown 或 PDF 格式的日语学习材料，系统自动提取语法点和词汇，然后引导用户完成包含翻译题和选择题的完整学习循环，并自动追踪薄弱项以优化后续复习。
 
 ### 当前已实现功能
 
-- **材料上传与提取** — 上传 TXT/Markdown 日语材料，通过 DeepSeek 提取语法点（含级别标注和原文示例）和词汇，示例验证通过后方持久化入库
+- **材料上传与提取** — 上传 TXT/Markdown/PDF 日语材料，通过 DeepSeek 提取语法点（含级别标注和原文示例）和词汇，示例验证通过后方持久化入库。PDF 文件优先直接提取嵌入文本，不足时自动切换至 OCR（tesseract）识别。
 - **引导式学习循环** — 从已提取的语法点中优先选择 N2 级别的两个作为语法 A 和 B，生成语法解释、10 道翻译题（A/B 各 5 道）和 9 道选择题（4 道辨析 + 5 道复习），共 19 道题
 - **智能评分** — 翻译题由 DeepSeek 进行结构化语义评估（判断是否使用目标语法、语义是否可接受），选择题由 Python 进行确定性判定
 - **薄弱项追踪** — 自动记录每道错题对应的语法薄弱项；同一语法点答错 2 次后自动激活；后续循环的复习题优先使用活跃薄弱项
@@ -37,7 +37,7 @@ Lingua Web 是一个自用日语学习 Web 原型，用三天时间完成了从�
 
 ### 实际学习流程
 
-1. 打开 `/materials` 页面上传 TXT 或 Markdown 格式的日语材料
+1. 打开 `/materials` 页面上传 TXT、Markdown 或 PDF 格式的日语材料（扫描件自动 OCR）
 2. 系统自动调用 DeepSeek 提取语法点和词汇，于详情页展示
 3. 在素材列表点击「开始学习」，系统选取两个语法点，生成 19 道题
 4. 逐题作答：翻译题输入日语，选择题选择 A/B/C/D
@@ -83,8 +83,10 @@ lingua-web/
 │   ├── routes/
 │   │   ├── upload.py        # 材料上传与展示
 │   │   └── study.py         # 学习循环运行时
+│   ├── services/
+│   │   └── material_parser.py # PDF/OCR 文本解析服务
 │   └── templates/           # 6 个 Jinja2 模板
-├── docs/reports/            # Day 1, Day 2, Day 3 实施报告
+├── docs/reports/            # Day 1, Day 2, Day 3, P2 实施报告
 ├── data/                    # SQLite 数据库（Git 忽略）
 ├── pyproject.toml
 ├── .env.example             # 环境变量模板
@@ -169,7 +171,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 - 当前仅实现日语学习流程，尚未扩展到多语言
 - 当前为单用户自用原型，不包含认证或账户隔离
-- 尚未实现听力、音频、PDF/OCR 与间隔重复
+- 尚未实现听力、音频与间隔重复
 - 题目质量仍依赖 LLM 生成结果与当前校验策略
 - 尚未进行生产部署与安全加固
 
@@ -177,6 +179,8 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 **P2（短期改进）**
 
+- PDF 材料导入与 OCR 回退 ✅（已完成）
+- 优化空状态上传入口 ✅（已完成）
 - 语法解释预生成并持久化，减少学习过程中 API 延迟或失败造成的中断
 - 加强选择题质量校验与歧义检测
 - 让活跃薄弱项强制进入指定复习题位
@@ -186,7 +190,6 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 **P3（扩展功能）**
 
 - 听力训练与音频处理
-- PDF/OCR 材料导入
 - SRS / 遗忘曲线
 - 多语言扩展
 - 多用户、部署与更完整 UI
@@ -198,8 +201,9 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 | [Day 1 报告](docs/reports/day1-material-ingestion-report.md) | `f5922b2` | 材料上传与提取流水线 |
 | [Day 2 报告](docs/reports/day2-study-cycle-runtime-report.md) | `f5922b2` | 19 题学习循环运行时 |
 | [Day 3 报告](docs/reports/day3-prototype-closure-report.md) | `f15c2ed` + `67680a6` | 薄弱项、恢复、成本测量 |
+| [P2 报告](docs/reports/p2-pdf-ocr-and-upload-entry-report.md) | TBD | PDF/OCR 材料导入与空状态修复 |
 
-提交链：`f5922b2` → `dcfdb41` → `f15c2ed` → `67680a6`
+提交链：`f5922b2` → `dcfdb41` → `f15c2ed` → `67680a6` → TBD
 
 ---
 
@@ -207,13 +211,13 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ### Overview
 
-Lingua Web is a self‑use Japanese learning web prototype built over three days. It covers the full pipeline from material upload to guided study cycles, weak‑point tracking, session resume, and LLM cost measurement.
+Lingua Web is a self‑use Japanese learning web prototype. It covers the full pipeline from material upload (TXT, Markdown, PDF with OCR) to guided study cycles, weak‑point tracking, session resume, and LLM cost measurement.
 
-Upload a TXT or Markdown Japanese learning text, and the system automatically extracts grammar points and vocabulary via DeepSeek. You then complete a structured study cycle of 19 questions (10 translation exercises + 9 multiple‑choice), receive feedback on each answer, and watch the system adapt review content based on your weak points.
+Upload a TXT, Markdown, or PDF Japanese learning text (scanned PDFs are handled via OCR), and the system automatically extracts grammar points and vocabulary via DeepSeek. You then complete a structured study cycle of 19 questions (10 translation exercises + 9 multiple‑choice), receive feedback on each answer, and watch the system adapt review content based on your weak points.
 
 ### Implemented Features
 
-- **Material Ingestion** — Upload TXT or Markdown files. Persist the raw text. Extract grammar points (with JLPT level tags and source‑material examples) and vocabulary via DeepSeek, but only persist items whose example excerpts are confirmed to appear in the uploaded text.
+- **Material Ingestion** — Upload TXT, Markdown, or PDF files. PDFs with embedded text use direct extraction; scanned/image-only PDFs fall back to OCR (tesseract). Persist the raw text. Extract grammar points (with JLPT level tags and source‑material examples) and vocabulary via DeepSeek, but only persist items whose example excerpts are confirmed to appear in the uploaded text.
 - **Guided Study Cycle** — Deterministically pick two N2‑preferred grammar points. Generate explanations, 10 translation exercises (5 per grammar point), and 9 multiple‑choice questions (4 distinction + 5 review) — 19 questions in total.
 - **Intelligent Grading** — Translation answers are evaluated by DeepSeek for semantic acceptability and target‑grammar usage. Multiple‑choice answers are graded by deterministic Python comparison — no LLM overhead.
 - **Weak Point Tracking** — Each wrong answer increments a counter for its associated grammar point. After 2 errors the weak point auto‑activates. Subsequent review questions prioritize active weak points.
@@ -222,7 +226,7 @@ Upload a TXT or Markdown Japanese learning text, and the system automatically ex
 
 ### Learning Flow
 
-1. Open `/materials` and upload a TXT or Markdown Japanese text.
+1. Open `/materials` and upload a TXT, Markdown, or PDF Japanese text (scanned PDFs use OCR).
 2. DeepSeek extracts grammar points and vocabulary automatically; view them on the material detail page.
 3. Click "Start Learning" on a material. The system selects two grammar points and generates 19 questions.
 4. Answer each question: type a Japanese translation, or select A/B/C/D for multiple‑choice.
@@ -354,7 +358,7 @@ Pricing follows DeepSeek V4 Flash rates (`$0.14/1M` input tokens, `$0.28/1M` out
 
 - The current implementation supports Japanese learning only; multilingual support has not yet been implemented.
 - This is a single‑user prototype without authentication or account isolation.
-- Listening, audio workflows, PDF/OCR, and spaced repetition are not implemented yet.
+- Listening, audio workflows, and spaced repetition are not implemented yet.
 - Question quality depends on LLM generation and the current validation strategy.
 - Production deployment and security hardening have not been completed.
 
@@ -362,6 +366,8 @@ Pricing follows DeepSeek V4 Flash rates (`$0.14/1M` input tokens, `$0.28/1M` out
 
 **P2 (Near‑term improvements)**
 
+- PDF material ingestion with OCR fallback ✅ (completed)
+- Empty-state upload entry improvements ✅ (completed)
 - Pre‑generate and persist grammar explanations to reduce interruptions caused by API latency or failure.
 - Strengthen multiple‑choice quality validation and ambiguity detection.
 - Force active weak points into defined review‑question slots.
@@ -371,7 +377,6 @@ Pricing follows DeepSeek V4 Flash rates (`$0.14/1M` input tokens, `$0.28/1M` out
 **P3 (Feature expansion)**
 
 - Listening practice and audio processing.
-- PDF/OCR material ingestion.
 - SRS and forgetting‑curve integration.
 - Multilingual expansion.
 - Multi‑user support, deployment, and a more complete UI.
@@ -383,8 +388,9 @@ Pricing follows DeepSeek V4 Flash rates (`$0.14/1M` input tokens, `$0.28/1M` out
 | [Day 1 Report](docs/reports/day1-material-ingestion-report.md) | `f5922b2` | Material upload and extraction pipeline |
 | [Day 2 Report](docs/reports/day2-study-cycle-runtime-report.md) | `f5922b2` | 19‑question study cycle runtime |
 | [Day 3 Report](docs/reports/day3-prototype-closure-report.md) | `f15c2ed` + `67680a6` | Weak points, resume, cost measurement |
+| [P2 Report](docs/reports/p2-pdf-ocr-and-upload-entry-report.md) | TBD | PDF/OCR material ingestion + empty-state fix |
 
-Commit chain: `f5922b2` → `dcfdb41` → `f15c2ed` → `67680a6`
+Commit chain: `f5922b2` → `dcfdb41` → `f15c2ed` → `67680a6` → TBD
 
 ---
 

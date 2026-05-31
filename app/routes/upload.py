@@ -11,11 +11,16 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Material, GrammarPoint, VocabItem
 from app.agents.extractor import extract_grammar_points, extract_vocab
+from app.services.material_parser import (
+    parse_uploaded_material,
+    is_supported_extension,
+    supported_extensions_display,
+)
 
 router = APIRouter(prefix="/materials", tags=["materials"])
 templates = Jinja2Templates(directory=Path(__file__).resolve().parent.parent / "templates")
 
-ALLOWED_EXTENSIONS = {".txt", ".md"}
+ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf"}
 
 
 def _validate_material(text: str) -> bool:
@@ -78,33 +83,44 @@ async def upload_material(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """Upload a TXT/MD material file, persist it, and trigger extraction."""
+    """Upload a TXT/MD/PDF material file, persist it, and trigger extraction."""
     # --- Validate file extension ---
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         return HTMLResponse(
-            f"Unsupported file type '{suffix}'. Only .txt and .md are accepted.",
+            f"Unsupported file type '{suffix}'. "
+            f"Only {', '.join(sorted(ALLOWED_EXTENSIONS))} are accepted.",
             status_code=400,
         )
 
-    # --- Read and validate content ---
+    # --- Read file content ---
     try:
         raw = await file.read()
-        content = raw.decode("utf-8")
+    except Exception as exc:
+        return HTMLResponse(f"Failed to read uploaded file: {exc}", status_code=400)
+
+    # --- Parse content (TXT/MD as text, PDF with OCR fallback) ---
+    try:
+        parsed = parse_uploaded_material(file.filename or "untitled", raw)
     except UnicodeDecodeError:
         return HTMLResponse(
             "File encoding error: could not read as UTF-8 text.",
             status_code=400,
         )
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=400)
 
-    if not _validate_material(content):
-        return HTMLResponse("Empty or whitespace-only file.", status_code=400)
+    if not parsed.content_text.strip():
+        error_msg = "无法从该文件提取可学习的文本。"
+        if parsed.warnings:
+            error_msg += " " + " ".join(parsed.warnings)
+        return HTMLResponse(error_msg, status_code=400)
 
     # --- Persist material ---
-    source_type = "md" if suffix == ".md" else "txt"
+    source_type = parsed.source_type
     material = Material(
         filename=file.filename,
-        content_text=content,
+        content_text=parsed.content_text,
         source_type=source_type,
         language_code="ja",
         uploaded_at=datetime.datetime.utcnow(),
@@ -117,7 +133,7 @@ async def upload_material(
     extraction_errors: list[str] = []
 
     # Grammar extraction
-    grammar_items = extract_grammar_points(content)
+    grammar_items = extract_grammar_points(parsed.content_text)
     for g in grammar_items:
         db.add(
             GrammarPoint(
@@ -131,7 +147,7 @@ async def upload_material(
         )
 
     # Vocab extraction
-    vocab_items = extract_vocab(content)
+    vocab_items = extract_vocab(parsed.content_text)
     for v in vocab_items:
         db.add(
             VocabItem(
