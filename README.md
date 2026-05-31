@@ -202,6 +202,9 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 | [Day 2 报告](docs/reports/day2-study-cycle-runtime-report.md) | `f5922b2` | 19 题学习循环运行时 |
 | [Day 3 报告](docs/reports/day3-prototype-closure-report.md) | `f15c2ed` + `67680a6` | 薄弱项、恢复、成本测量 |
 | [P2 报告](docs/reports/p2-pdf-ocr-and-upload-entry-report.md) | TBD | PDF/OCR 材料导入与空状态修复 |
+| [P2.1 报告](docs/reports/p2-1-gpt54-mini-pdf-vision-report.md) | TBD | GPT-5.4-mini PDF 视觉解析 |
+
+提交链：`f5922b2` → `dcfdb41` → `f15c2ed` → `67680a6` → TBD
 
 提交链：`f5922b2` → `dcfdb41` → `f15c2ed` → `67680a6` → TBD
 
@@ -389,6 +392,7 @@ Pricing follows DeepSeek V4 Flash rates (`$0.14/1M` input tokens, `$0.28/1M` out
 | [Day 2 Report](docs/reports/day2-study-cycle-runtime-report.md) | `f5922b2` | 19‑question study cycle runtime |
 | [Day 3 Report](docs/reports/day3-prototype-closure-report.md) | `f15c2ed` + `67680a6` | Weak points, resume, cost measurement |
 | [P2 Report](docs/reports/p2-pdf-ocr-and-upload-entry-report.md) | TBD | PDF/OCR material ingestion + empty-state fix |
+| [P2.1 Report](docs/reports/p2-1-gpt54-mini-pdf-vision-report.md) | TBD | GPT-5.4-mini PDF vision analysis |
 
 Commit chain: `f5922b2` → `dcfdb41` → `f15c2ed` → `67680a6` → TBD
 

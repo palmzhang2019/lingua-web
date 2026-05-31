@@ -11,6 +11,12 @@
     类型: {{ material.source_type|upper }}
     | 语言: {{ material.language_code|upper }}
     | 上传时间: {{ material.uploaded_at.strftime('%Y-%m-%d %H:%M:%S') if material.uploaded_at else '' }}
+    {% if material.source_page_start and material.source_page_end %}
+    | 页码范围: {{ material.source_page_start }}-{{ material.source_page_end }}
+    {% endif %}
+    {% if material.extraction_method == 'openai_pdf_vision' %}
+    <span class="tag" style="background:#9b59b6;color:#fff;">AI 视觉解析</span>
+    {% endif %}
 </div>
 
 <!-- Extracted Grammar Points -->
@@ -21,6 +27,9 @@
     <div class="card">
         <strong>{{ gp.point_name }}</strong>
         <span class="tag tag-{{ gp.difficulty_level|lower }}">{{ gp.difficulty_level }}</span>
+        {% if gp.source_page %}
+        <span class="tag" style="background:#3498db;color:#fff;">第{{ gp.source_page }}页</span>
+        {% endif %}
         <p style="margin-top: 0.25rem;">{{ gp.explanation_jp }}</p>
         <div class="grammar-example">{{ gp.example_from_material }}</div>
         <div class="meta">提取时间: {{ gp.extracted_at.strftime('%Y-%m-%d %H:%M') if gp.extracted_at else '' }}</div>
@@ -45,6 +54,9 @@
         <strong>{{ v.word }}</strong>
         {% if v.reading %}<span style="color:#7f8c8d;">（{{ v.reading }}）</span>{% endif %}
         <span class="tag tag-{{ v.difficulty_level|lower }}">{{ v.difficulty_level }}</span>
+        {% if v.source_page %}
+        <span class="tag" style="background:#3498db;color:#fff;">第{{ v.source_page }}页</span>
+        {% endif %}
         {% if v.meaning_zh %}<p style="margin-top: 0.25rem;">📖 {{ v.meaning_zh }}</p>{% endif %}
         {% if v.example_from_material %}
         <div class="grammar-example">{{ v.example_from_material }}</div>
@@ -59,7 +71,7 @@
 {% endif %}
 
 <!-- Raw Material Text -->
-<h2 style="margin-top: 2rem;">📃 原文</h2>
+<h2 style="margin-top: 2rem;">📃 提取内容</h2>
 <div class="card" style="white-space: pre-wrap; font-size: 0.9rem; line-height: 1.7;">
 {{ material.content_text }}
 </div>

@@ -17,16 +17,20 @@ from app.db import Base
 
 
 class Material(Base):
-    """Uploaded language learning material (TXT/MD)."""
+    """Uploaded language learning material (TXT/MD/PDF)."""
 
     __tablename__ = "materials"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     filename = Column(String(255), nullable=False)
     content_text = Column(Text, nullable=False)
-    source_type = Column(String(20), nullable=False, default="txt")  # txt | md
+    source_type = Column(String(20), nullable=False, default="txt")  # txt | md | pdf
     language_code = Column(String(10), nullable=False, default="ja")
     uploaded_at = Column(DateTime, default=datetime.datetime.utcnow)
+    # PDF page grounding (nullable for TXT/MD)
+    source_page_start = Column(Integer, nullable=True)
+    source_page_end = Column(Integer, nullable=True)
+    extraction_method = Column(String(30), nullable=True)  # None for TXT/MD, "openai_pdf_vision" for PDF
 
 
 class GrammarPoint(Base):
@@ -41,6 +45,7 @@ class GrammarPoint(Base):
     example_from_material = Column(Text, nullable=False)
     difficulty_level = Column(String(10), nullable=False, default="N2")
     extracted_at = Column(DateTime, default=datetime.datetime.utcnow)
+    source_page = Column(Integer, nullable=True)  # PDF page where this was found
 
 
 class VocabItem(Base):
@@ -56,6 +61,7 @@ class VocabItem(Base):
     example_from_material = Column(Text, nullable=True)
     difficulty_level = Column(String(10), nullable=False, default="N2")
     extracted_at = Column(DateTime, default=datetime.datetime.utcnow)
+    source_page = Column(Integer, nullable=True)  # PDF page where this was found
 
 
 class StudyCycle(Base):

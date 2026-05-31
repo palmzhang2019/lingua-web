@@ -11,12 +11,33 @@
     <form action="/materials/upload" method="post" enctype="multipart/form-data"
           hx-post="/materials/upload" hx-target="body" hx-swap="outerHTML">
         <p><strong>上传日语学习素材</strong></p>
-        <p style="color:#7f8c8d; font-size:0.85rem;">支持 .txt、.md 和 .pdf（扫描件支持 OCR 识别）</p>
-        <input type="file" name="file" accept=".txt,.md,.pdf" required>
+        <p style="color:#7f8c8d; font-size:0.85rem;">
+            支持 .txt、.md 和 .pdf（PDF 使用 AI 视觉理解，每次最多 3 页，文件最大 10 MB）
+        </p>
+        <input type="file" name="file" id="file-input" accept=".txt,.md,.pdf" required onchange="togglePageRange()">
+        <br>
+        <div id="pdf-page-range" style="display:none; margin-top:0.5rem;">
+            <label>页码范围：</label>
+            <input type="number" name="start_page" value="1" min="1" style="width:70px;">
+            <span> — </span>
+            <input type="number" name="end_page" value="1" min="1" style="width:70px;">
+            <span style="color:#7f8c8d; font-size:0.85rem;">（每次最多 3 页）</span>
+        </div>
         <br>
         <button type="submit" class="btn btn-primary">上传并提取</button>
     </form>
 </div>
+<script>
+function togglePageRange() {
+    const input = document.getElementById('file-input');
+    const range = document.getElementById('pdf-page-range');
+    if (input.files.length > 0 && input.files[0].name.toLowerCase().endsWith('.pdf')) {
+        range.style.display = 'block';
+    } else {
+        range.style.display = 'none';
+    }
+}
+</script>
 {% else %}
 <p style="margin: 1rem 0;">
     <a href="/materials?show_upload=1" class="btn btn-primary">＋ 上传新素材</a>
@@ -39,6 +60,12 @@
                     {{ m.uploaded_at.strftime('%Y-%m-%d %H:%M') if m.uploaded_at else '' }}
                     | 语言: {{ m.language_code|upper }}
                     | 语法点: {{ gp_count }}
+                    {% if m.source_page_start and m.source_page_end %}
+                    | 页: {{ m.source_page_start }}-{{ m.source_page_end }}
+                    {% endif %}
+                    {% if m.extraction_method == 'openai_pdf_vision' %}
+                    <span class="tag tag-pdf">AI 视觉解析</span>
+                    {% endif %}
                 </div>
             </div>
             <div>
@@ -60,12 +87,33 @@
           hx-post="/materials/upload" hx-target="body" hx-swap="outerHTML">
         <p><strong>欢迎使用 Lingua Web 🎉</strong></p>
         <p>还没有上传任何素材。上传第一篇日语学习素材开始学习吧。</p>
-        <p style="color:#7f8c8d; font-size:0.85rem;">支持 .txt、.md 和 .pdf（扫描件支持 OCR 识别）</p>
-        <input type="file" name="file" accept=".txt,.md,.pdf" required>
+        <p style="color:#7f8c8d; font-size:0.85rem;">
+            支持 .txt、.md 和 .pdf（PDF 使用 AI 视觉理解，每次最多 3 页，文件最大 10 MB）
+        </p>
+        <input type="file" name="file" id="file-input-empty" accept=".txt,.md,.pdf" required onchange="togglePageRangeEmpty()">
+        <br>
+        <div id="pdf-page-range-empty" style="display:none; margin-top:0.5rem;">
+            <label>页码范围：</label>
+            <input type="number" name="start_page" value="1" min="1" style="width:70px;">
+            <span> — </span>
+            <input type="number" name="end_page" value="1" min="1" style="width:70px;">
+            <span style="color:#7f8c8d; font-size:0.85rem;">（每次最多 3 页）</span>
+        </div>
         <br>
         <button type="submit" class="btn btn-primary">上传并提取</button>
     </form>
 </div>
+<script>
+function togglePageRangeEmpty() {
+    const input = document.getElementById('file-input-empty');
+    const range = document.getElementById('pdf-page-range-empty');
+    if (input.files.length > 0 && input.files[0].name.toLowerCase().endsWith('.pdf')) {
+        range.style.display = 'block';
+    } else {
+        range.style.display = 'none';
+    }
+}
+</script>
 {% endif %}
 
 {% endblock %}
