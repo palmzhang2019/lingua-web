@@ -46,6 +46,7 @@ class GrammarPoint(Base):
     difficulty_level = Column(String(10), nullable=False, default="N2")
     extracted_at = Column(DateTime, default=datetime.datetime.utcnow)
     source_page = Column(Integer, nullable=True)  # PDF page where this was found
+    mastered = Column(Boolean, default=False)  # user-marked as already known
 
 
 class VocabItem(Base):
@@ -62,6 +63,7 @@ class VocabItem(Base):
     difficulty_level = Column(String(10), nullable=False, default="N2")
     extracted_at = Column(DateTime, default=datetime.datetime.utcnow)
     source_page = Column(Integer, nullable=True)  # PDF page where this was found
+    mastered = Column(Boolean, default=False)  # user-marked as already known
 
 
 class StudyCycle(Base):

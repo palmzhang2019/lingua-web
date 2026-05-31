@@ -103,7 +103,7 @@ def structured_extraction(
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.1,
-            max_tokens=4096,
+            max_tokens=8192,
         )
         raw = response.choices[0].message.content
         if not raw:

@@ -28,18 +28,19 @@ Lingua Web 是一个自用日语学习 Web 原型，用三天时间完成了从�
 
 ### 当前已实现功能
 
-- **材料上传与提取** — 上传 TXT/Markdown/PDF 日语材料，通过 DeepSeek 提取语法点（含级别标注和原文示例）和词汇，示例验证通过后方持久化入库。PDF 文件优先直接提取嵌入文本，不足时自动切换至 OCR（tesseract）识别。
-- **引导式学习循环** — 从已提取的语法点中优先选择 N2 级别的两个作为语法 A 和 B，生成语法解释、10 道翻译题（A/B 各 5 道）和 9 道选择题（4 道辨析 + 5 道复习），共 19 道题
+- **材料上传与提取** — 上传 TXT/Markdown/PDF 日语材料。TXT/MD 通过 DeepSeek 提取语法点（含级别标注和原文示例）和词汇；PDF 通过 OpenAI gpt‑5.4‑mini 视觉理解提取，**仅发送用户指定的页码范围**，不超过 10 页，文件上限 10 MB。提取的语法/词汇可标记为「已掌握」，后续循环自动跳过。
+- **引导式学习循环** — 从已提取的**未掌握**语法点中优先选择 N2 级别的两个作为语法 A 和 B，并行生成语法解释、10 道翻译题（A/B 各 5 道）和 9 道选择题（4 道辨析 + 5 道复习），共 19 道题
 - **智能评分** — 翻译题由 DeepSeek 进行结构化语义评估（判断是否使用目标语法、语义是否可接受），选择题由 Python 进行确定性判定
 - **薄弱项追踪** — 自动记录每道错题对应的语法薄弱项；同一语法点答错 2 次后自动激活；后续循环的复习题优先使用活跃薄弱项
 - **学习恢复与模块操作** — 未完成的循环可中断后精确恢复；支持跳过当前模块（不计入有效完成）和标记已学过（计入有效完成）
-- **成本追踪** — 记录所有 DeepSeek API 调用的 token 用量并估算成本
+- **已掌握标记** — 上传后可在素材详情页将已掌握的语法/单词标记为「已掌握」，也可在学习过程中随时标记。标记后不影响历史成绩，但后续循环不再选用。
+- **成本追踪** — 记录所有 DeepSeek 和 OpenAI API 调用的 token 用量并估算成本
 
 ### 实际学习流程
 
-1. 打开 `/materials` 页面上传 TXT、Markdown 或 PDF 格式的日语材料（扫描件自动 OCR）
-2. 系统自动调用 DeepSeek 提取语法点和词汇，于详情页展示
-3. 在素材列表点击「开始学习」，系统选取两个语法点，生成 19 道题
+1. 打开 `/materials` 页面上传 TXT、Markdown 或 PDF 格式的日语材料（PDF 使用 gpt‑5.4‑mini 视觉理解分析，仅选择希望学习的页码范围）
+2. 系统自动调取 AI 提取语法点和词汇，于详情页展示；用户可将已掌握的语法/词汇标记为「已掌握」
+3. 在素材列表点击「开始学习」，系统从**未掌握**的语法点中选取两个，并行生成 19 道题
 4. 逐题作答：翻译题输入日语，选择题选择 A/B/C/D
 5. 每道题后显示反馈（翻译题显示评分理由和修正答案，选择题显示正确答案）
 6. 全部 19 题完成后显示正确率及每题详情
@@ -51,10 +52,10 @@ Lingua Web 是一个自用日语学习 Web 原型，用三天时间完成了从�
 ```
 用户浏览器 → FastAPI 服务 → SQLite 数据库
                   ↓
-           DeepSeek API
+          DeepSeek API / OpenAI API
 ```
 
-**边界划分：** DeepSeek 负责语言内容的提取、生成与翻译答案的语义评估；Python Runtime 与 SQLite 负责确定性流程推进、判题写入、薄弱项更新、会话恢复与完成判定。
+**边界划分：** DeepSeek 负责 TXT/MD 提取与学习循环生成/评估；OpenAI gpt‑5.4‑mini 负责 PDF 视觉理解提取（仅用户指定页）；Python Runtime 与 SQLite 负责流程推进、已掌握过滤、判题写入、薄弱项更新、会话恢复与完成判定。
 
 ### 技术栈
 
@@ -63,9 +64,10 @@ Lingua Web 是一个自用日语学习 Web 原型，用三天时间完成了从�
 | 语言 | Python 3.11 |
 | Web 框架 | FastAPI |
 | 数据库 | SQLite + SQLAlchemy 2.x |
-| 模板 | Jinja2（服务端渲染 + HTMX 表单交互） |
+| 模板 | Jinja2（服务端渲染） |
 | 包管理 | uv |
-| AI | DeepSeek API（OpenAI 兼容 SDK） |
+| AI | DeepSeek API（TXT/MD 提取、学习循环生成/评估） |
+| AI | OpenAI gpt‑5.4‑mini（PDF 视觉理解提取） |
 
 ### 目录结构
 
@@ -84,8 +86,11 @@ lingua-web/
 │   │   ├── upload.py        # 材料上传与展示
 │   │   └── study.py         # 学习循环运行时
 │   ├── services/
-│   │   └── material_parser.py # PDF/OCR 文本解析服务
-│   └── templates/           # 6 个 Jinja2 模板
+│   │   └── material_parser.py # PDF 切片与文本解析服务
+│   ├── pdf_vision.py          # OpenAI gpt‑5.4‑mini PDF 视觉提取
+│   └── templates/
+│       ├── partials/          # 2 个卡片组件（grammar_card, vocab_card）
+│       └── 6 个 Jinja2 模板
 ├── docs/reports/            # Day 1, Day 2, Day 3, P2 实施报告
 ├── data/                    # SQLite 数据库（Git 忽略）
 ├── pyproject.toml

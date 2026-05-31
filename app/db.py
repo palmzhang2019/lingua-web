@@ -39,6 +39,8 @@ def init_db() -> None:
     _add_column_if_missing("materials", "extraction_method", "VARCHAR(30)")
     _add_column_if_missing("grammar_points", "source_page", "INTEGER")
     _add_column_if_missing("vocab_items", "source_page", "INTEGER")
+    _add_column_if_missing("grammar_points", "mastered", "BOOLEAN")
+    _add_column_if_missing("vocab_items", "mastered", "BOOLEAN")
 
 
 def _add_column_if_missing(table: str, column: str, coltype: str):

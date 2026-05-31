@@ -1,0 +1,29 @@
+<div class="card" id="vocab-card-{{ v.id }}" style="{% if v.mastered %}opacity:0.5;{% endif %}">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div style="flex:1;">
+            <strong>{{ v.word }}</strong>
+            {% if v.reading %}<span style="color:#7f8c8d;">（{{ v.reading }}）</span>{% endif %}
+            <span class="tag tag-{{ v.difficulty_level|lower }}">{{ v.difficulty_level }}</span>
+            {% if v.source_page %}
+            <span class="tag" style="background:#3498db;color:#fff;">第{{ v.source_page }}页</span>
+            {% endif %}
+            {% if v.mastered %}
+            <span class="tag" style="background:#27ae60;color:#fff;">✅ 已掌握</span>
+            {% endif %}
+            {% if v.meaning_zh %}<p style="margin-top: 0.25rem;">📖 {{ v.meaning_zh }}</p>{% endif %}
+            {% if v.example_from_material %}
+            <div class="grammar-example">{{ v.example_from_material }}</div>
+            {% endif %}
+            <div class="meta">提取时间: {{ v.extracted_at.strftime('%Y-%m-%d %H:%M') if v.extracted_at else '' }}</div>
+        </div>
+        <form action="/materials/{{ v.material_id }}/vocab/{{ v.id }}/toggle_mastered" method="post"
+              style="margin-left:1rem;"
+              onsubmit="event.preventDefault();var f=this,b=f.querySelector('button');b.disabled=1;fetch(f.action,{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'}}).then(function(r){if(!r.ok)throw Error(r.status);return r.text();}).then(function(html){var c=document.getElementById('vocab-card-{{ v.id }}');if(c)c.outerHTML=html;}).catch(function(){b.disabled=0;f.submit();});">
+            {% if v.mastered %}
+            <button type="submit" class="btn" style="background:#95a5a6;color:#fff;white-space:nowrap;">↩ 取消掌握</button>
+            {% else %}
+            <button type="submit" class="btn" style="background:#27ae60;color:#fff;white-space:nowrap;">✅ 已掌握</button>
+            {% endif %}
+        </form>
+    </div>
+</div>

@@ -229,23 +229,36 @@ async def start_cycle(
         .all()
     )
 
-    if len(grammar_points) < 2:
+    # Filter out user-marked-as-mastered grammar points
+    unmastered = [gp for gp in grammar_points if not gp.mastered]
+
+    if len(unmastered) < 2:
+        total = len(grammar_points)
+        mastered_count = total - len(unmastered)
+        if len(unmastered) == 1:
+            msg = (
+                "<div class='card flash-error'>"
+                "<strong>无法开始学习：</strong>该素材需要至少 2 个未掌握的语法点才能开始学习。"
+                f"共 {total} 个语法点，已掌握 {mastered_count} 个，"
+                f"仅剩 1 个，仍需至少 2 个。</div>"
+                "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
+            )
+        else:
+            msg = (
+                "<div class='card flash-error'>"
+                "<strong>无法开始学习：</strong>该素材需要至少 2 个未掌握的语法点。"
+                f"共 {total} 个语法点，已掌握 {mastered_count} 个。"
+                "请先上传更多素材。</div>"
+                "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
+            )
         return templates.TemplateResponse(
             request, "base.html",
-            {
-                "content": (
-                    "<div class='card flash-error'>"
-                    "<strong>无法开始学习：</strong>该素材至少需要 2 个语法点才能开始学习。"
-                    f"当前只有 {len(grammar_points)} 个语法点。</div>"
-                    "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
-                )
-            },
+            {"content": msg},
             status_code=400,
         )
 
-    # Select grammar A and B deterministically: first two N2 points by id,
-    # fallback to earliest available
-    n2_points = [gp for gp in grammar_points if gp.difficulty_level == "N2"]
+    # Select grammar A and B from unmastered points deterministically
+    n2_points = [gp for gp in unmastered if gp.difficulty_level == "N2"]
     if len(n2_points) >= 2:
         grammar_a = n2_points[0]
         grammar_b = n2_points[1]
@@ -255,7 +268,7 @@ async def start_cycle(
 
     # Remaining points for review questions
     review_points = [
-        gp for gp in grammar_points
+        gp for gp in unmastered
         if gp.id not in (grammar_a.id, grammar_b.id)
     ]
 
@@ -273,10 +286,37 @@ async def start_cycle(
     # If we have more than enough for 5 review slots, prefer weak ones
     # The LLM will use what it needs from the list
 
-    # ---------- Generate explanations ----------
-    explanation_a = generate_explanation(grammar_a)
-    explanation_b = generate_explanation(grammar_b)
+    # ---------- Parallel generation: 5 independent DeepSeek calls ----------
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
 
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        expl_a_future = loop.run_in_executor(
+            executor, generate_explanation, grammar_a
+        )
+        expl_b_future = loop.run_in_executor(
+            executor, generate_explanation, grammar_b
+        )
+        trans_a_future = loop.run_in_executor(
+            executor, generate_translation_exercises, grammar_a, 5
+        )
+        trans_b_future = loop.run_in_executor(
+            executor, generate_translation_exercises, grammar_b, 5
+        )
+        mc_future = loop.run_in_executor(
+            executor, generate_multiple_choice,
+            grammar_a, grammar_b, prioritized_review,
+        )
+
+        (explanation_a, explanation_b,
+         trans_a, trans_b, mc_questions) = await asyncio.gather(
+            expl_a_future, expl_b_future,
+            trans_a_future, trans_b_future,
+            mc_future,
+        )
+
+    # ---------- Validate results ----------
     if not explanation_a or not explanation_b:
         return templates.TemplateResponse(
             request, "base.html",
@@ -290,10 +330,6 @@ async def start_cycle(
             },
             status_code=500,
         )
-
-    # ---------- Generate translation exercises ----------
-    trans_a = generate_translation_exercises(grammar_a, 5)
-    trans_b = generate_translation_exercises(grammar_b, 5)
 
     if len(trans_a) < 5 or len(trans_b) < 5:
         return templates.TemplateResponse(
@@ -309,8 +345,6 @@ async def start_cycle(
             status_code=500,
         )
 
-    # ---------- Generate multiple-choice questions (with weak-point priority) ----------
-    mc_questions = generate_multiple_choice(grammar_a, grammar_b, prioritized_review)
     if len(mc_questions) < 9:
         return templates.TemplateResponse(
             request, "base.html",
@@ -628,6 +662,19 @@ async def current_question(
             "module_name": MODULE_LABELS.get(state.current_module, state.current_module or ""),
             "can_skip_or_study": can_skip_or_study,
             "current_module": state.current_module,
+            # Grammar point info for "mark as mastered" during study
+            "grammar_a_info": {
+                "id": grammar_a.id,
+                "name": grammar_a.point_name,
+                "mastered": grammar_a.mastered,
+                "material_id": grammar_a.material_id,
+            } if grammar_a else None,
+            "grammar_b_info": {
+                "id": grammar_b.id,
+                "name": grammar_b.point_name,
+                "mastered": grammar_b.mastered,
+                "material_id": grammar_b.material_id,
+            } if grammar_b else None,
         },
     )
 

@@ -6,7 +6,7 @@ Handles TXT, Markdown (via UTF-8 decode -> DeepSeek), and PDF
 
 For PDF: uses OpenAI Responses API with model gpt-5.4-mini for
 layout-aware understanding of Japanese textbook pages.
-Only selected pages (bounded: max 3 per request, up to 10 MB) are sent.
+Only selected pages (bounded: max 10 per request, up to 10 MB) are sent.
 """
 
 import os
@@ -24,7 +24,7 @@ from io import BytesIO
 MAX_PDF_BYTES = 10 * 1024 * 1024
 
 # Maximum pages per analysis request
-MAX_PDF_PAGES = 3
+MAX_PDF_PAGES = 10
 
 # ---------------------------------------------------------------------------
 # Data types

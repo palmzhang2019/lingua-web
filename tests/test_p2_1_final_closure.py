@@ -146,10 +146,10 @@ resp = client.post("/materials/upload", data={"start_page": "1", "end_page": "1"
 })
 results.append(("Large PDF (>10MB) rejected", resp.status_code == 400, ""))
 
-resp = client.post("/materials/upload", data={"start_page": "1", "end_page": "5"}, files={
+resp = client.post("/materials/upload", data={"start_page": "1", "end_page": "15"}, files={
     "file": ("toomany.pdf", pdf_full, "application/pdf")
 })
-results.append((">3 pages rejected", resp.status_code == 400, ""))
+results.append((f">{MAX_PDF_PAGES} pages rejected", resp.status_code == 400, ""))
 
 resp = client.post("/materials/upload", data={"start_page": "0", "end_page": "2"}, files={
     "file": ("invalid.pdf", pdf_full, "application/pdf")

@@ -24,16 +24,7 @@
 
 {% if grammar_points %}
     {% for gp in grammar_points %}
-    <div class="card">
-        <strong>{{ gp.point_name }}</strong>
-        <span class="tag tag-{{ gp.difficulty_level|lower }}">{{ gp.difficulty_level }}</span>
-        {% if gp.source_page %}
-        <span class="tag" style="background:#3498db;color:#fff;">第{{ gp.source_page }}页</span>
-        {% endif %}
-        <p style="margin-top: 0.25rem;">{{ gp.explanation_jp }}</p>
-        <div class="grammar-example">{{ gp.example_from_material }}</div>
-        <div class="meta">提取时间: {{ gp.extracted_at.strftime('%Y-%m-%d %H:%M') if gp.extracted_at else '' }}</div>
-    </div>
+    {% include "partials/grammar_card.html" %}
     {% endfor %}
 {% else %}
 <div class="card" style="color:#7f8c8d;">
@@ -50,19 +41,7 @@
 
 {% if vocab_items %}
     {% for v in vocab_items %}
-    <div class="card">
-        <strong>{{ v.word }}</strong>
-        {% if v.reading %}<span style="color:#7f8c8d;">（{{ v.reading }}）</span>{% endif %}
-        <span class="tag tag-{{ v.difficulty_level|lower }}">{{ v.difficulty_level }}</span>
-        {% if v.source_page %}
-        <span class="tag" style="background:#3498db;color:#fff;">第{{ v.source_page }}页</span>
-        {% endif %}
-        {% if v.meaning_zh %}<p style="margin-top: 0.25rem;">📖 {{ v.meaning_zh }}</p>{% endif %}
-        {% if v.example_from_material %}
-        <div class="grammar-example">{{ v.example_from_material }}</div>
-        {% endif %}
-        <div class="meta">提取时间: {{ v.extracted_at.strftime('%Y-%m-%d %H:%M') if v.extracted_at else '' }}</div>
-    </div>
+    {% include "partials/vocab_card.html" %}
     {% endfor %}
 {% else %}
 <div class="card" style="color:#7f8c8d;">

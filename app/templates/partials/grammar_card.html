@@ -1,0 +1,26 @@
+<div class="card" id="grammar-card-{{ gp.id }}" style="{% if gp.mastered %}opacity:0.5;{% endif %}">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div style="flex:1;">
+            <strong>{{ gp.point_name }}</strong>
+            <span class="tag tag-{{ gp.difficulty_level|lower }}">{{ gp.difficulty_level }}</span>
+            {% if gp.source_page %}
+            <span class="tag" style="background:#3498db;color:#fff;">第{{ gp.source_page }}页</span>
+            {% endif %}
+            {% if gp.mastered %}
+            <span class="tag" style="background:#27ae60;color:#fff;">✅ 已掌握</span>
+            {% endif %}
+            <p style="margin-top: 0.25rem;">{{ gp.explanation_jp }}</p>
+            <div class="grammar-example">{{ gp.example_from_material }}</div>
+            <div class="meta">提取时间: {{ gp.extracted_at.strftime('%Y-%m-%d %H:%M') if gp.extracted_at else '' }}</div>
+        </div>
+        <form action="/materials/{{ gp.material_id }}/grammar/{{ gp.id }}/toggle_mastered" method="post"
+              style="margin-left:1rem;"
+              onsubmit="event.preventDefault();var f=this,b=f.querySelector('button');b.disabled=1;fetch(f.action,{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'}}).then(function(r){if(!r.ok)throw Error(r.status);return r.text();}).then(function(html){var c=document.getElementById('grammar-card-{{ gp.id }}');if(c)c.outerHTML=html;}).catch(function(){b.disabled=0;f.submit();});">
+            {% if gp.mastered %}
+            <button type="submit" class="btn" style="background:#95a5a6;color:#fff;white-space:nowrap;">↩ 取消掌握</button>
+            {% else %}
+            <button type="submit" class="btn" style="background:#27ae60;color:#fff;white-space:nowrap;">✅ 已掌握</button>
+            {% endif %}
+        </form>
+    </div>
+</div>

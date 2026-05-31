@@ -251,3 +251,63 @@ def _persist_pdf_vision_items(
             source_page=v.get("source_page"),
         ))
     db.commit()
+
+
+# =============================================================================
+# POST /materials/<id>/grammar/<gid>/toggle_mastered
+# =============================================================================
+
+@router.post("/{material_id}/grammar/{grammar_id}/toggle_mastered")
+async def toggle_grammar_mastered(
+    request: Request,
+    material_id: int,
+    grammar_id: int,
+    db: Session = Depends(get_db),
+):
+    gp = db.query(GrammarPoint).filter(
+        GrammarPoint.id == grammar_id,
+        GrammarPoint.material_id == material_id,
+    ).first()
+    if not gp:
+        return HTMLResponse("Grammar point not found", status_code=404)
+    gp.mastered = not gp.mastered
+    db.commit()
+
+    # AJAX (inline JS fetch): return just the card fragment — no body swap, no scroll jump
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return templates.TemplateResponse(
+            request, "partials/grammar_card.html",
+            {"gp": gp},
+        )
+
+    return RedirectResponse(url=f"/materials/{material_id}", status_code=303)
+
+
+# =============================================================================
+# POST /materials/<id>/vocab/<vid>/toggle_mastered
+# =============================================================================
+
+@router.post("/{material_id}/vocab/{vocab_id}/toggle_mastered")
+async def toggle_vocab_mastered(
+    request: Request,
+    material_id: int,
+    vocab_id: int,
+    db: Session = Depends(get_db),
+):
+    v = db.query(VocabItem).filter(
+        VocabItem.id == vocab_id,
+        VocabItem.material_id == material_id,
+    ).first()
+    if not v:
+        return HTMLResponse("Vocab item not found", status_code=404)
+    v.mastered = not v.mastered
+    db.commit()
+
+    # AJAX (inline JS fetch): return just the card fragment — no body swap, no scroll jump
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return templates.TemplateResponse(
+            request, "partials/vocab_card.html",
+            {"v": v},
+        )
+
+    return RedirectResponse(url=f"/materials/{material_id}", status_code=303)

@@ -1,10 +1,15 @@
-"""
-Lingua Web — FastAPI application entry point.
+"""Lingua Web — FastAPI application entry point.
 
 Initialize the database on startup and mount all route handlers.
 """
 
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+# MUST be called before any app modules are imported, because db.py, llm.py,
+# and pdf_vision.py read os.getenv() at module-import time.
+load_dotenv()
 
 import uvicorn
 from fastapi import FastAPI

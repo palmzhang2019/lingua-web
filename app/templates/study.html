@@ -26,7 +26,7 @@
             请将上面的中文翻译成日语，注意使用语法点「{{ question.grammar_point }}」。
         </p>
     </div>
-    <form action="/study/answer" method="post" hx-post="/study/answer" hx-target="body" hx-swap="outerHTML"
+    <form action="/study/answer" method="post"
           style="margin-top: 1rem;">
         <input type="hidden" name="_method" value="post">
         <textarea name="answer" rows="3" style="width: 100%; padding: 0.75rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 6px;"
@@ -42,7 +42,7 @@
             {{ question.prompt }}
         </p>
     </div>
-    <form action="/study/answer" method="post" hx-post="/study/answer" hx-target="body" hx-swap="outerHTML"
+    <form action="/study/answer" method="post"
           style="margin-top: 1rem;">
         <input type="hidden" name="_method" value="post">
         <div style="display: grid; gap: 0.5rem; margin: 0.5rem 0;">
@@ -67,6 +67,24 @@
     </form>
     <form action="/study/mark_studied" method="post" style="display: inline;">
         <button type="submit" class="btn" style="background: #27ae60; color: #fff;" onclick="return confirm('确定标记为已学过？未答题将被标记为已学过。')">📖 我已学过</button>
+    </form>
+    {% endif %}
+    {% if grammar_a_info %}
+    <form action="/materials/{{ grammar_a_info.material_id }}/grammar/{{ grammar_a_info.id }}/toggle_mastered" method="post" style="display: inline;">
+        {% if grammar_a_info.mastered %}
+        <button type="submit" class="btn" style="background:#95a5a6;color:#fff;">↩ {{ grammar_a_info.name }} 取消掌握</button>
+        {% else %}
+        <button type="submit" class="btn" style="background:#7f8c8d;color:#fff;">✅ {{ grammar_a_info.name }} 已掌握</button>
+        {% endif %}
+    </form>
+    {% endif %}
+    {% if grammar_b_info %}
+    <form action="/materials/{{ grammar_b_info.material_id }}/grammar/{{ grammar_b_info.id }}/toggle_mastered" method="post" style="display: inline;">
+        {% if grammar_b_info.mastered %}
+        <button type="submit" class="btn" style="background:#95a5a6;color:#fff;">↩ {{ grammar_b_info.name }} 取消掌握</button>
+        {% else %}
+        <button type="submit" class="btn" style="background:#7f8c8d;color:#fff;">✅ {{ grammar_b_info.name }} 已掌握</button>
+        {% endif %}
     </form>
     {% endif %}
 </div>

@@ -8,11 +8,10 @@
 {% if materials or request.query_params.get('show_upload') %}
 {% if request.query_params.get('show_upload') %}
 <div class="upload-area">
-    <form action="/materials/upload" method="post" enctype="multipart/form-data"
-          hx-post="/materials/upload" hx-target="body" hx-swap="outerHTML">
+    <form action="/materials/upload" method="post" enctype="multipart/form-data">
         <p><strong>上传日语学习素材</strong></p>
         <p style="color:#7f8c8d; font-size:0.85rem;">
-            支持 .txt、.md 和 .pdf（PDF 使用 AI 视觉理解，每次最多 3 页，文件最大 10 MB）
+            支持 .txt、.md 和 .pdf（PDF 使用 AI 视觉理解，每次最多 10 页，文件最大 10 MB）
         </p>
         <input type="file" name="file" id="file-input" accept=".txt,.md,.pdf" required onchange="togglePageRange()">
         <br>
@@ -21,7 +20,7 @@
             <input type="number" name="start_page" value="1" min="1" style="width:70px;">
             <span> — </span>
             <input type="number" name="end_page" value="1" min="1" style="width:70px;">
-            <span style="color:#7f8c8d; font-size:0.85rem;">（每次最多 3 页）</span>
+            <span style="color:#7f8c8d; font-size:0.85rem;">（每次最多 10 页）</span>
         </div>
         <br>
         <button type="submit" class="btn btn-primary">上传并提取</button>
@@ -83,12 +82,11 @@ function togglePageRange() {
     {% endfor %}
 {% else %}
 <div class="upload-area">
-    <form action="/materials/upload" method="post" enctype="multipart/form-data"
-          hx-post="/materials/upload" hx-target="body" hx-swap="outerHTML">
+    <form action="/materials/upload" method="post" enctype="multipart/form-data">
         <p><strong>欢迎使用 Lingua Web 🎉</strong></p>
         <p>还没有上传任何素材。上传第一篇日语学习素材开始学习吧。</p>
         <p style="color:#7f8c8d; font-size:0.85rem;">
-            支持 .txt、.md 和 .pdf（PDF 使用 AI 视觉理解，每次最多 3 页，文件最大 10 MB）
+            支持 .txt、.md 和 .pdf（PDF 使用 AI 视觉理解，每次最多 10 页，文件最大 10 MB）
         </p>
         <input type="file" name="file" id="file-input-empty" accept=".txt,.md,.pdf" required onchange="togglePageRangeEmpty()">
         <br>
@@ -97,7 +95,7 @@ function togglePageRange() {
             <input type="number" name="start_page" value="1" min="1" style="width:70px;">
             <span> — </span>
             <input type="number" name="end_page" value="1" min="1" style="width:70px;">
-            <span style="color:#7f8c8d; font-size:0.85rem;">（每次最多 3 页）</span>
+            <span style="color:#7f8c8d; font-size:0.85rem;">（每次最多 10 页）</span>
         </div>
         <br>
         <button type="submit" class="btn btn-primary">上传并提取</button>
