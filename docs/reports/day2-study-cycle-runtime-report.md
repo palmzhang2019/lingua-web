@@ -205,7 +205,7 @@ curl -X POST http://localhost:8080/study/start_cycle -d "material_id=1"
 # 查看当前题
 curl http://localhost:8080/study/current
 
-# 提交答案（17 次翻译 + 9 次选择题）
+# 提交答案（10 次翻译 + 9 次选择题）
 curl -X POST http://localhost:8080/study/answer -d "answer=時間がないので、ゆっくりしてはいられない。"
 
 # 选择题
