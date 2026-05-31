@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}学习 — Lingua Web{% endblock %}
+{% block content %}
+
+{% if explanation_html %}
+{{ explanation_html|safe }}
+{% endif %}
+
+<div class="card">
+    <div class="meta" style="margin-bottom: 0.75rem;">
+        <strong>模块：</strong>{{ module_name }}
+        | <strong>进度：</strong>{{ question.index }}/{{ question.total }}
+        {% if question.answered > 0 %}
+        | <strong>已答：</strong>{{ question.answered }} 题
+        | <strong>正确：</strong>{{ question.correct }} 题
+        {% endif %}
+    </div>
+
+    {% if question.mode == "translation" %}
+    <div style="margin: 1rem 0;">
+        <p><strong>翻译题：</strong></p>
+        <p style="font-size: 1.2rem; background: #f0f0f0; padding: 1rem; border-radius: 6px; margin: 0.5rem 0;">
+            {{ question.prompt_zh }}
+        </p>
+        <p style="color: #7f8c8d; font-size: 0.85rem;">
+            请将上面的中文翻译成日语，注意使用语法点「{{ question.grammar_point }}」。
+        </p>
+    </div>
+    <form action="/study/answer" method="post" hx-post="/study/answer" hx-target="body" hx-swap="outerHTML"
+          style="margin-top: 1rem;">
+        <input type="hidden" name="_method" value="post">
+        <textarea name="answer" rows="3" style="width: 100%; padding: 0.75rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 6px;"
+                  placeholder="在此输入你的日语翻译..." required></textarea>
+        <br><br>
+        <button type="submit" class="btn btn-primary">提交答案</button>
+    </form>
+
+    {% elif question.mode == "multiple_choice" %}
+    <div style="margin: 1rem 0;">
+        <p><strong>选择题：</strong></p>
+        <p style="font-size: 1.1rem; padding: 1rem; background: #f0f0f0; border-radius: 6px; margin: 0.5rem 0;">
+            {{ question.prompt }}
+        </p>
+    </div>
+    <form action="/study/answer" method="post" hx-post="/study/answer" hx-target="body" hx-swap="outerHTML"
+          style="margin-top: 1rem;">
+        <input type="hidden" name="_method" value="post">
+        <div style="display: grid; gap: 0.5rem; margin: 0.5rem 0;">
+            {% for letter, text in (question.choices or {}).items() %}
+            <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px; cursor: pointer;">
+                <input type="radio" name="answer" value="{{ letter }}" required>
+                <strong>{{ letter }}.</strong> {{ text }}
+            </label>
+            {% endfor %}
+        </div>
+        <button type="submit" class="btn btn-primary">提交答案</button>
+    </form>
+    {% endif %}
+</div>
+
+<div style="margin-top: 1rem;">
+    <a href="/study/progress" class="btn" style="background: #ecf0f1; color: #333;">查看进度</a>
+    <a href="/materials" class="btn" style="background: #ecf0f1; color: #333;">返回素材列表</a>
+</div>
+
+{% endblock %}

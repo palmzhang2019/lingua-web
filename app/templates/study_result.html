@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}学习结果 — Lingua Web{% endblock %}
+{% block content %}
+
+<h1>📊 学习结果</h1>
+
+<div class="card" style="text-align: center; padding: 2rem;">
+    {% if in_progress %}
+    <h2>当前进度</h2>
+    {% else %}
+    <h2>🎉 学习完成！</h2>
+    {% endif %}
+
+    <div style="font-size: 3rem; margin: 1.5rem 0; color: {% if accuracy >= 70 %}#27ae60{% elif accuracy >= 40 %}#f39c12{% else %}#e74c3c{% endif %};">
+        {{ accuracy }}%
+    </div>
+    <p style="font-size: 1.1rem;">
+        正确 <strong>{{ correct }}</strong> / {{ total }} 题
+    </p>
+    <p class="meta">
+        已答：{{ answered }} 题 | 总题：{{ total }} 题
+    </p>
+</div>
+
+{% if not in_progress %}
+<div class="card">
+    <h3>答题详情</h3>
+    <table>
+        <tr>
+            <th>#</th>
+            <th>模块</th>
+            <th>结果</th>
+            <th>你的答案</th>
+        </tr>
+        {% for q in questions %}
+        <tr>
+            <td>{{ loop.index }}</td>
+            <td>
+                {% if q.module_type == "grammar_a_translation" %}语法A翻译
+                {% elif q.module_type == "grammar_b_translation" %}语法B翻译
+                {% else %}选择题
+                {% endif %}
+            </td>
+            <td>{{ '✅' if q.is_correct else '❌' }}</td>
+            <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">
+                {{ q.user_answer[:60] if q.user_answer else '-' }}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
+
+<div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+    <a href="/materials" class="btn btn-primary">返回素材列表</a>
+    {% if in_progress %}
+    <a href="/study/current" class="btn btn-primary">继续答题</a>
+    {% endif %}
+</div>
+
+{% endblock %}

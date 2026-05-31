@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}素材列表 — Lingua Web{% endblock %}
+{% block content %}
+
+<h1>📚 学习素材</h1>
+
+<!-- Upload form (HTMX-enhanced) -->
+{% if request.query_params.get('show_upload') %}
+<div class="upload-area">
+    <form action="/materials/upload" method="post" enctype="multipart/form-data"
+          hx-post="/materials/upload" hx-target="body" hx-swap="outerHTML">
+        <p><strong>上传日语学习素材</strong></p>
+        <p style="color:#7f8c8d; font-size:0.85rem;">支持 .txt 和 .md 格式，编码需为 UTF-8</p>
+        <input type="file" name="file" accept=".txt,.md" required>
+        <br>
+        <button type="submit" class="btn btn-primary">上传并提取</button>
+    </form>
+</div>
+{% else %}
+<p style="margin: 1rem 0;">
+    <a href="/materials?show_upload=1" class="btn btn-primary">＋ 上传新素材</a>
+</p>
+{% endif %}
+
+{% if materials %}
+    {% for item in materials %}
+    {% set m = item.material %}
+    {% set gp_count = item.grammar_count %}
+    <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <a href="/materials/{{ m.id }}" style="text-decoration:none; color:inherit;">
+                    <strong>{{ m.filename }}</strong>
+                </a>
+                <span class="tag tag-{{ m.source_type }}">{{ m.source_type|upper }}</span>
+                <div class="meta">
+                    {{ m.uploaded_at.strftime('%Y-%m-%d %H:%M') if m.uploaded_at else '' }}
+                    | 语言: {{ m.language_code|upper }}
+                    | 语法点: {{ gp_count }}
+                </div>
+            </div>
+            <div>
+                {% if gp_count >= 2 %}
+                <form action="/study/start_cycle" method="post" style="display:inline;">
+                    <input type="hidden" name="material_id" value="{{ m.id }}">
+                    <button type="submit" class="btn btn-primary" style="background: #27ae60;">开始学习</button>
+                </form>
+                {% else %}
+                <span class="btn" style="background: #95a5a6; color: #fff; cursor: not-allowed;">需要至少 2 个语法点</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+{% else %}
+<div class="card" style="text-align:center; color:#7f8c8d;">
+    <p>还没有上传任何素材。</p>
+    <p style="margin-top:0.5rem;"><a href="/materials?show_upload=1">点击这里上传第一篇素材</a></p>
+</div>
+{% endif %}
+
+{% endblock %}
