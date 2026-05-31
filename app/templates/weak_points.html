@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}薄弱点 — Lingua Web{% endblock %}
+{% block content %}
+
+<h1>📊 薄弱点追踪</h1>
+
+{% set active = weak_points|selectattr("is_active")|list %}
+{% set inactive = weak_points|rejectattr("is_active")|list %}
+
+<div class="card">
+    {% if weak_points %}
+    <div style="margin-bottom: 1rem;">
+        <p>共 <strong>{{ weak_points|length }}</strong> 个薄弱点，
+        其中 <strong>{{ active|length }}</strong> 个已激活。</p>
+    </div>
+
+    {% if active %}
+    <h3>🔴 已激活薄弱点（错误 ≥ 2 次）</h3>
+    <table>
+        <tr>
+            <th>语法点</th>
+            <th>错误次数</th>
+            <th>最后错误</th>
+            <th>状态</th>
+        </tr>
+        {% for wp in active %}
+        <tr>
+            <td><strong>{{ wp.point_reference }}</strong></td>
+            <td>{{ wp.error_count }}</td>
+            <td>{{ wp.last_error_at.strftime('%Y-%m-%d %H:%M') if wp.last_error_at else '-' }}</td>
+            <td><span style="color: #e74c3c;">🔴 活跃</span></td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+
+    {% if inactive %}
+    <h3 style="margin-top: 1.5rem;">🟡 未激活薄弱点（错误 1 次）</h3>
+    <table>
+        <tr>
+            <th>语法点</th>
+            <th>错误次数</th>
+            <th>最后错误</th>
+            <th>状态</th>
+        </tr>
+        {% for wp in inactive %}
+        <tr>
+            <td><strong>{{ wp.point_reference }}</strong></td>
+            <td>{{ wp.error_count }}</td>
+            <td>{{ wp.last_error_at.strftime('%Y-%m-%d %H:%M') if wp.last_error_at else '-' }}</td>
+            <td><span style="color: #f39c12;">🟡 待激活</span></td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+
+    {% else %}
+    <p>暂无薄弱点记录。继续学习后，系统会自动追踪薄弱语法点。</p>
+    {% endif %}
+</div>
+
+<div style="margin-top: 1rem;">
+    <a href="/materials" class="btn btn-primary">返回素材列表</a>
+</div>
+
+{% endblock %}

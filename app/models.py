@@ -84,6 +84,7 @@ class QuestionAttempt(Base):
     correct_answer = Column(Text, nullable=False)
     is_correct = Column(Boolean, default=False)
     answered_at = Column(DateTime, nullable=True)
+    status = Column(String(20), nullable=False, default="pending")  # pending | answered | skipped | studied
 
 
 class WeakPoint(Base):
@@ -109,3 +110,17 @@ class SessionState(Base):
     current_module = Column(String(50), nullable=True)
     current_question_index = Column(Integer, default=0)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class UsageLog(Base):
+    """Token usage log for LLM API calls."""
+
+    __tablename__ = "usage_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    call_purpose = Column(String(100), nullable=False)
+    cycle_id = Column(Integer, ForeignKey("study_cycles.id"), nullable=True)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    called_at = Column(DateTime, default=datetime.datetime.utcnow)

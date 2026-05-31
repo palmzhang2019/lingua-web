@@ -20,6 +20,28 @@ from typing import Any
 from openai import OpenAI
 
 # ---------------------------------------------------------------------------
+# Usage tracking (module-level accumulator — thread-local not needed for single-thread dev)
+# ---------------------------------------------------------------------------
+_usage_records: list[dict] = []  # each: {"purpose": str, "prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
+
+
+def record_usage(purpose: str, prompt_tokens: int, completion_tokens: int, total_tokens: int) -> None:
+    _usage_records.append({
+        "purpose": purpose,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    })
+
+
+def get_and_clear_usage() -> list[dict]:
+    """Return all pending usage records and reset the accumulator."""
+    records = list(_usage_records)
+    _usage_records.clear()
+    return records
+
+
+# ---------------------------------------------------------------------------
 # Configuration (read from environment)
 # ---------------------------------------------------------------------------
 API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
@@ -90,6 +112,15 @@ def structured_extraction(
 
         # Strip markdown code fences if present
         raw = _strip_fences(raw)
+
+        # Record usage if available
+        if response.usage:
+            record_usage(
+                purpose=f"structured_extraction:{response_format.__name__}",
+                prompt_tokens=response.usage.prompt_tokens or 0,
+                completion_tokens=response.usage.completion_tokens or 0,
+                total_tokens=response.usage.total_tokens or 0,
+            )
 
         # Parse JSON
         data = json.loads(raw)

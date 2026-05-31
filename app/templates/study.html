@@ -61,6 +61,14 @@
 <div style="margin-top: 1rem;">
     <a href="/study/progress" class="btn" style="background: #ecf0f1; color: #333;">查看进度</a>
     <a href="/materials" class="btn" style="background: #ecf0f1; color: #333;">返回素材列表</a>
+    {% if can_skip_or_study %}
+    <form action="/study/skip_module" method="post" style="display: inline;">
+        <button type="submit" class="btn" style="background: #f39c12; color: #fff;" onclick="return confirm('确定跳过当前模块？跳过后的模块不计入有效完成。')">⏭ 跳过当前模块</button>
+    </form>
+    <form action="/study/mark_studied" method="post" style="display: inline;">
+        <button type="submit" class="btn" style="background: #27ae60; color: #fff;" onclick="return confirm('确定标记为已学过？未答题将被标记为已学过。')">📖 我已学过</button>
+    </form>
+    {% endif %}
 </div>
 
 {% endblock %}

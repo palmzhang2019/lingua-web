@@ -45,12 +45,28 @@ app.include_router(study_router)
 
 # ---------------------------------------------------------------------------
 # Root redirect
-# ---------------------------------------------------------------------------
 from fastapi.responses import RedirectResponse
+from fastapi import Depends, Request
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+from app.db import get_db
+from app.models import WeakPoint
+
 
 @app.get("/")
 async def root():
     return RedirectResponse(url="/materials")
+
+
+@app.get("/weak_points")
+async def weak_points_page(request: Request, db: Session = Depends(get_db)):
+    """Display tracked weak points."""
+    templates = Jinja2Templates(directory=Path(__file__).resolve().parent / "templates")
+    weak_points = db.query(WeakPoint).order_by(WeakPoint.last_error_at.desc()).all()
+    return templates.TemplateResponse(
+        request, "weak_points.html",
+        {"weak_points": weak_points},
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,11 @@
     <h2>当前进度</h2>
     {% else %}
     <h2>🎉 学习完成！</h2>
+    {% if is_valid_completion %}
+    <p style="color: #27ae60; font-size: 1.1rem;">✅ 有效完成（所有模块已完整作答或标记为已学过）</p>
+    {% else %}
+    <p style="color: #e67e22; font-size: 1.1rem;">⚠️ 已完成但部分模块被跳过，本次不计入有效完成。</p>
+    {% endif %}
     {% endif %}
 
     <div style="font-size: 3rem; margin: 1.5rem 0; color: {% if accuracy >= 70 %}#27ae60{% elif accuracy >= 40 %}#f39c12{% else %}#e74c3c{% endif %};">

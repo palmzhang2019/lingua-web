@@ -1,4 +1,4 @@
-"""Study-cycle routes — Day 2 runtime: start cycle, answer questions, view progress."""
+"""Study-cycle routes — Day 2 runtime + Day 3 weak points, resume, module actions."""
 
 import datetime
 from pathlib import Path
@@ -16,6 +16,7 @@ from app.models import (
     QuestionAttempt,
     SessionState,
     WeakPoint,
+    UsageLog,
 )
 from app.schemas import TranslationExercise, MultipleChoiceQuestion, QuestionPayload
 from app.agents.generator import (
@@ -24,9 +25,18 @@ from app.agents.generator import (
     generate_multiple_choice,
     evaluate_translation_answer,
 )
+from app.llm import get_and_clear_usage, is_available
 
 router = APIRouter(prefix="/study", tags=["study"])
 templates = Jinja2Templates(directory=Path(__file__).resolve().parent.parent / "templates")
+
+
+MODULE_ORDER = ["grammar_a_translation", "grammar_b_translation", "multiple_choice"]
+MODULE_LABELS = {
+    "grammar_a_translation": "语法 A 翻译练习",
+    "grammar_b_translation": "语法 B 翻译练习",
+    "multiple_choice": "选择题练习",
+}
 
 
 def _get_or_create_session_state(db: Session) -> SessionState:
@@ -43,6 +53,157 @@ def _get_or_create_session_state(db: Session) -> SessionState:
         db.commit()
         db.refresh(state)
     return state
+
+
+def _get_sorted_cycle_questions(db: Session, cycle_id: int) -> list[QuestionAttempt]:
+    """Get all questions for a cycle, ordered by id."""
+    return (
+        db.query(QuestionAttempt)
+        .filter(QuestionAttempt.cycle_id == cycle_id)
+        .order_by(QuestionAttempt.id)
+        .all()
+    )
+
+
+def _get_module_questions(all_qs: list[QuestionAttempt], module: str) -> list[QuestionAttempt]:
+    """Filter questions by module type."""
+    return [q for q in all_qs if q.module_type == module]
+
+
+def _find_next_module(
+    all_qs: list[QuestionAttempt], current_module: str | None
+) -> str | None:
+    """Find the next module after current_module that has any unanswered questions."""
+    start = 0
+    if current_module and current_module in MODULE_ORDER:
+        start = MODULE_ORDER.index(current_module) + 1
+    for mod in MODULE_ORDER[start:]:
+        module_qs = _get_module_questions(all_qs, mod)
+        pending = [q for q in module_qs if q.status == "pending"]
+        if pending:
+            return mod
+    return None
+
+
+def _first_pending_question_index(all_qs: list[QuestionAttempt]) -> int | None:
+    """Return the index (in all_qs) of the first pending question."""
+    for i, q in enumerate(all_qs):
+        if q.status == "pending":
+            return i
+    return None
+
+
+def _compute_cycle_completion(db: Session, cycle: StudyCycle) -> dict:
+    """Compute completion stats for a cycle. Also sets completed_at + is_valid_completion if fully done."""
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
+    total = len(all_qs)
+    answered = sum(1 for q in all_qs if q.status == "answered")
+    skipped_count = sum(1 for q in all_qs if q.status == "skipped")
+    studied_count = sum(1 for q in all_qs if q.status == "studied")
+    pending = sum(1 for q in all_qs if q.status == "pending")
+    correct = sum(1 for q in all_qs if q.is_correct)
+
+    # Module-level analysis
+    module_statuses = {}
+    had_skipped = False
+    for mod in MODULE_ORDER:
+        mod_qs = _get_module_questions(all_qs, mod)
+        mod_pending = sum(1 for q in mod_qs if q.status == "pending")
+        mod_skipped = sum(1 for q in mod_qs if q.status == "skipped")
+        if mod_skipped > 0:
+            had_skipped = True
+        module_statuses[mod] = {
+            "total": len(mod_qs),
+            "pending": mod_pending,
+            "skipped": mod_skipped,
+            "studied": sum(1 for q in mod_qs if q.status == "studied"),
+            "answered": sum(1 for q in mod_qs if q.status == "answered"),
+            "done": mod_pending == 0,
+        }
+
+    is_done = pending == 0
+    if is_done and not cycle.completed_at:
+        cycle.completed_at = datetime.datetime.utcnow()
+        cycle.is_valid_completion = is_done and not had_skipped
+        db.commit()
+
+    return {
+        "total": total,
+        "answered": answered,
+        "skipped": skipped_count,
+        "studied": studied_count,
+        "pending": pending,
+        "correct": correct,
+        "accuracy": round(correct / total * 100, 1) if total > 0 else 0,
+        "is_done": is_done,
+        "had_skipped_module": had_skipped,
+        "is_valid_completion": cycle.is_valid_completion if is_done else False,
+        "module_statuses": module_statuses,
+    }
+
+
+def _record_weak_point(
+    db: Session, grammar_point_name: str
+) -> None:
+    """Record or increment a grammar weak point from a wrong answer."""
+    wp = (
+        db.query(WeakPoint)
+        .filter(
+            WeakPoint.point_type == "grammar",
+            WeakPoint.point_reference == grammar_point_name,
+        )
+        .first()
+    )
+    if wp:
+        wp.error_count = (wp.error_count or 0) + 1
+        wp.last_error_at = datetime.datetime.utcnow()
+        if wp.error_count >= 2:
+            wp.is_active = True
+    else:
+        wp = WeakPoint(
+            point_type="grammar",
+            point_reference=grammar_point_name,
+            error_count=1,
+            last_error_at=datetime.datetime.utcnow(),
+            is_active=False,
+        )
+        db.add(wp)
+    db.commit()
+
+
+def _persist_usage_logs(db: Session, cycle_id: int | None = None) -> None:
+    """Flush accumulated usage records from llm.py into the DB."""
+    records = get_and_clear_usage()
+    for r in records:
+        log = UsageLog(
+            call_purpose=r["purpose"],
+            cycle_id=cycle_id,
+            prompt_tokens=r["prompt_tokens"],
+            completion_tokens=r["completion_tokens"],
+            total_tokens=r["total_tokens"],
+            called_at=datetime.datetime.utcnow(),
+        )
+        db.add(log)
+    if records:
+        db.commit()
+
+
+def _build_answer_feedback_html(
+    is_correct: bool, expected: str, user_answer: str, explanation: str | None = None
+) -> str:
+    """Build HTML feedback for an answer."""
+    icon = "✅" if is_correct else "❌"
+    result_text = "正确！" if is_correct else "不正确"
+    html = (
+        f'<div class="card">'
+        f'<h3>{icon} {result_text}</h3>'
+        f'<p><strong>你的答案：</strong>{user_answer}</p>'
+        f'<p><strong>参考答案：</strong>{expected}</p>'
+    )
+    if explanation:
+        html += f'<p style="color: #555; background: #f9f9f9; padding: 0.5rem; border-radius: 4px;">{explanation}</p>'
+    html += '</div>'
+    return html
 
 
 # =============================================================================
@@ -98,6 +259,20 @@ async def start_cycle(
         if gp.id not in (grammar_a.id, grammar_b.id)
     ]
 
+    # --- Day 3: Prioritize active weak points for review questions ---
+    active_weak_points = (
+        db.query(WeakPoint)
+        .filter(WeakPoint.point_type == "grammar", WeakPoint.is_active == True)
+        .all()
+    )
+    weak_point_names = {wp.point_reference for wp in active_weak_points}
+    # Move active weak-point grammar points to the front of review_points
+    weak_review = [gp for gp in review_points if gp.point_name in weak_point_names]
+    other_review = [gp for gp in review_points if gp.point_name not in weak_point_names]
+    prioritized_review = weak_review + other_review
+    # If we have more than enough for 5 review slots, prefer weak ones
+    # The LLM will use what it needs from the list
+
     # ---------- Generate explanations ----------
     explanation_a = generate_explanation(grammar_a)
     explanation_b = generate_explanation(grammar_b)
@@ -134,8 +309,8 @@ async def start_cycle(
             status_code=500,
         )
 
-    # ---------- Generate multiple-choice questions ----------
-    mc_questions = generate_multiple_choice(grammar_a, grammar_b, review_points)
+    # ---------- Generate multiple-choice questions (with weak-point priority) ----------
+    mc_questions = generate_multiple_choice(grammar_a, grammar_b, prioritized_review)
     if len(mc_questions) < 9:
         return templates.TemplateResponse(
             request, "base.html",
@@ -162,15 +337,9 @@ async def start_cycle(
     db.commit()
     db.refresh(cycle)
 
-    # ---------- Persist explanations as payloads for module intros ----------
-    # Store explanations in question_payload_json of placeholder rows for module info
-    # We'll store A explanation, B explanation, and MC info as metadata on the cycle
-
-    # ---------- Persist 19 question attempts ----------
-    question_index = 0
-
+    # ---------- Persist 19 question attempts with status="pending" ----------
     # Questions 1-5: Grammar A translation
-    for i, ex in enumerate(trans_a):
+    for ex in trans_a:
         payload = QuestionPayload(
             type="translation",
             prompt_zh=ex.prompt_zh,
@@ -186,11 +355,12 @@ async def start_cycle(
             correct_answer=ex.reference_answer_ja,
             is_correct=False,
             answered_at=None,
+            status="pending",
         )
         db.add(qa)
 
     # Questions 6-10: Grammar B translation
-    for i, ex in enumerate(trans_b):
+    for ex in trans_b:
         payload = QuestionPayload(
             type="translation",
             prompt_zh=ex.prompt_zh,
@@ -206,11 +376,12 @@ async def start_cycle(
             correct_answer=ex.reference_answer_ja,
             is_correct=False,
             answered_at=None,
+            status="pending",
         )
         db.add(qa)
 
     # Questions 11-19: Multiple choice
-    for i, mc in enumerate(mc_questions):
+    for mc in mc_questions:
         payload = QuestionPayload(
             type="multiple_choice",
             choices={"A": mc.A, "B": mc.B, "C": mc.C, "D": mc.D},
@@ -227,10 +398,14 @@ async def start_cycle(
             correct_answer=mc.expected,
             is_correct=False,
             answered_at=None,
+            status="pending",
         )
         db.add(qa)
 
     db.commit()
+
+    # ---------- Persist usage logs for generation phase ----------
+    _persist_usage_logs(db, cycle.id)
 
     # ---------- Initialize session state ----------
     state = _get_or_create_session_state(db)
@@ -240,6 +415,69 @@ async def start_cycle(
     state.updated_at = datetime.datetime.utcnow()
     db.commit()
 
+    return RedirectResponse(url="/study/current", status_code=303)
+
+
+# =============================================================================
+# GET /study — home / resume entry point
+# =============================================================================
+
+@router.get("", response_class=HTMLResponse)
+async def study_home(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Show study home: resume if unfinished, or prompt to start new."""
+    state = _get_or_create_session_state(db)
+    if not state.current_cycle_id:
+        # No active cycle — show start page
+        return templates.TemplateResponse(
+            request, "base.html",
+            {
+                "content": (
+                    "<h1>📚 学习</h1>"
+                    "<p>还没有开始学习。请先选择一个素材开始。</p>"
+                    "<a href='/materials' class='btn btn-primary'>去素材列表</a>"
+                )
+            },
+        )
+
+    cycle = db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first()
+    if not cycle:
+        return templates.TemplateResponse(
+            request, "base.html",
+            {
+                "content": (
+                    "<h1>📚 学习</h1>"
+                    "<p>会话状态异常，请重新开始。</p>"
+                    "<a href='/materials' class='btn btn-primary'>去素材列表</a>"
+                )
+            },
+        )
+
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
+
+    # Check if cycle is fully completed
+    if cycle.completed_at:
+        # Completed — show results, do NOT resume
+        stats = _compute_cycle_completion(db, cycle)
+        return templates.TemplateResponse(
+            request, "study_result.html",
+            {
+                "cycle": cycle,
+                "total": stats["total"],
+                "answered": stats["answered"],
+                "correct": stats["correct"],
+                "accuracy": stats["accuracy"],
+                "questions": all_qs,
+                "in_progress": False,
+                "had_skipped_module": stats["had_skipped_module"],
+                "is_valid_completion": stats["is_valid_completion"],
+                "module_statuses": stats["module_statuses"],
+            },
+        )
+
+    # Unfinished — redirect to current question
     return RedirectResponse(url="/study/current", status_code=303)
 
 
@@ -257,42 +495,73 @@ async def current_question(
     if not state.current_cycle_id:
         return templates.TemplateResponse(
             request, "base.html",
-            {"content": "<p>还没有开始学习。请先选择一个素材开始学习。</p><a href='/materials' class='btn btn-primary'>去素材列表</a>"},
+            {
+                "content": (
+                    "<h1>📚 学习</h1>"
+                    "<p>还没有开始学习。请先选择一个素材开始学习。</p>"
+                    "<a href='/materials' class='btn btn-primary'>去素材列表</a>"
+                )
+            },
         )
 
     cycle = db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first()
     if not cycle:
         return HTMLResponse("Cycle not found", status_code=404)
 
-    # Count total and answered
-    all_qs = (
-        db.query(QuestionAttempt)
-        .filter(QuestionAttempt.cycle_id == cycle.id)
-        .order_by(QuestionAttempt.id)
-        .all()
-    )
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
     total = len(all_qs)
-    answered = sum(1 for q in all_qs if q.answered_at is not None)
-    correct = sum(1 for q in all_qs if q.is_correct)
 
-    # If all answered, show results
-    if answered >= total:
+    # If cycle already completed (completed_at set), show results
+    if cycle.completed_at:
+        stats = _compute_cycle_completion(db, cycle)
         return templates.TemplateResponse(
             request, "study_result.html",
             {
                 "cycle": cycle,
-                "total": total,
-                "answered": answered,
-                "correct": correct,
-                "accuracy": round(correct / total * 100, 1) if total > 0 else 0,
+                "total": stats["total"],
+                "answered": stats["answered"],
+                "correct": stats["correct"],
+                "accuracy": stats["accuracy"],
                 "questions": all_qs,
+                "in_progress": False,
+                "had_skipped_module": stats["had_skipped_module"],
+                "is_valid_completion": stats["is_valid_completion"],
+                "module_statuses": stats["module_statuses"],
             },
         )
 
-    # Find the current unanswered question
-    current_q = all_qs[state.current_question_index] if state.current_question_index < total else None
-    if not current_q:
-        return HTMLResponse("No current question found", status_code=404)
+    # --- Day 3: Resume support — find first pending question ---
+    first_pending_idx = _first_pending_question_index(all_qs)
+    if first_pending_idx is None:
+        # No pending questions — all done or all skipped/studied
+        # Trigger completion
+        stats = _compute_cycle_completion(db, cycle)
+        return templates.TemplateResponse(
+            request, "study_result.html",
+            {
+                "cycle": cycle,
+                "total": stats["total"],
+                "answered": stats["answered"],
+                "correct": stats["correct"],
+                "accuracy": stats["accuracy"],
+                "questions": all_qs,
+                "in_progress": False,
+                "had_skipped_module": stats["had_skipped_module"],
+                "is_valid_completion": stats["is_valid_completion"],
+                "module_statuses": stats["module_statuses"],
+            },
+        )
+
+    # Fix session state to point to the actual first pending question
+    state.current_question_index = first_pending_idx
+    current_q = all_qs[first_pending_idx]
+    state.current_module = current_q.module_type
+    state.updated_at = datetime.datetime.utcnow()
+    db.commit()
+
+    current_q = all_qs[state.current_question_index]
+    answered_count = sum(1 for q in all_qs if q.status == "answered")
+    correct_count = sum(1 for q in all_qs if q.is_correct)
 
     # Build the view payload (strip hidden answers)
     payload = current_q.question_payload_json
@@ -301,8 +570,8 @@ async def current_question(
         "module_type": current_q.module_type,
         "index": state.current_question_index + 1,
         "total": total,
-        "answered": answered,
-        "correct": correct,
+        "answered": answered_count,
+        "correct": correct_count,
     }
 
     if payload.get("type") == "translation":
@@ -346,16 +615,19 @@ async def current_question(
                 f"</div>"
             )
 
+    # --- Determine if module is in a skip-able/studied-able state ---
+    mod_qs = _get_module_questions(all_qs, state.current_module)
+    mod_pending = sum(1 for q in mod_qs if q.status == "pending")
+    can_skip_or_study = mod_pending > 0
+
     return templates.TemplateResponse(
         request, "study.html",
         {
             "question": view_data,
             "explanation_html": explanation_html,
-            "module_name": {
-                "grammar_a_translation": "语法 A 翻译练习",
-                "grammar_b_translation": "语法 B 翻译练习",
-                "multiple_choice": "选择题练习",
-            }.get(state.current_module, state.current_module or ""),
+            "module_name": MODULE_LABELS.get(state.current_module, state.current_module or ""),
+            "can_skip_or_study": can_skip_or_study,
+            "current_module": state.current_module,
         },
     )
 
@@ -375,12 +647,7 @@ async def submit_answer(
     if not state.current_cycle_id:
         return HTMLResponse("No active cycle", status_code=400)
 
-    all_qs = (
-        db.query(QuestionAttempt)
-        .filter(QuestionAttempt.cycle_id == state.current_cycle_id)
-        .order_by(QuestionAttempt.id)
-        .all()
-    )
+    all_qs = _get_sorted_cycle_questions(db, state.current_cycle_id)
 
     if state.current_question_index >= len(all_qs):
         return HTMLResponse("All questions already answered", status_code=400)
@@ -388,9 +655,12 @@ async def submit_answer(
     current_q = all_qs[state.current_question_index]
     if current_q.answered_at is not None:
         return HTMLResponse("This question was already answered", status_code=400)
+    if current_q.status != "pending":
+        return HTMLResponse("This question was skipped or studied", status_code=400)
 
     payload = current_q.question_payload_json
     module_type = current_q.module_type
+    is_correct = False
 
     if module_type in ("grammar_a_translation", "grammar_b_translation"):
         # Translation grading via DeepSeek
@@ -416,17 +686,21 @@ async def submit_answer(
             )
 
         current_q.user_answer = answer
-        current_q.is_correct = evaluation.is_correct
+        is_correct = evaluation.is_correct
+        current_q.is_correct = is_correct
         current_q.answered_at = datetime.datetime.utcnow()
+        current_q.status = "answered"
         current_q.correct_answer = evaluation.corrected_answer_ja
         db.commit()
 
         feedback = evaluation.feedback_zh
+        feedback_html = _build_answer_feedback_html(
+            is_correct, evaluation.corrected_answer_ja, answer, feedback
+        )
 
     else:
         # Multiple choice — deterministic Python grading
         normalized = answer.strip().upper()
-        # Accept 1/2/3/4 → A/B/C/D
         number_map = {"1": "A", "2": "B", "3": "C", "4": "D"}
         if normalized in number_map:
             normalized = number_map[normalized]
@@ -437,17 +711,25 @@ async def submit_answer(
         current_q.user_answer = answer
         current_q.is_correct = is_correct
         current_q.answered_at = datetime.datetime.utcnow()
+        current_q.status = "answered"
         db.commit()
 
-        # Build feedback
         choices = payload.get("choices", {})
         correct_text = choices.get(expected, expected)
-        feedback = (
-            f"{'✅ 正确！' if is_correct else '❌ 不正确。'}"
-            f" 正确答案是 {expected}：{correct_text}"
+        result_text = f"✅ 正确！" if is_correct else f"❌ 不正确。正确答案是 {expected}：{correct_text}"
+        feedback_html = _build_answer_feedback_html(
+            is_correct, f"{expected}：{correct_text}", answer
         )
 
-    # Advance session state to next unanswered question
+    # --- Day 3: Record weak point for wrong answers ---
+    grammar_point_name = payload.get("grammar_point", "")
+    if grammar_point_name and not is_correct:
+        _record_weak_point(db, grammar_point_name)
+
+    # --- Persist usage for evaluation call ---
+    _persist_usage_logs(db, state.current_cycle_id)
+
+    # Advance session state to next unanswered/pending question
     next_index = state.current_question_index + 1
     if next_index < len(all_qs):
         next_q = all_qs[next_index]
@@ -456,29 +738,137 @@ async def submit_answer(
             state.current_module = next_q.module_type
         state.updated_at = datetime.datetime.utcnow()
     else:
-        # All questions completed
-        state.current_question_index = next_index  # past last
-        cycle = db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first()
-        if cycle:
-            cycle.completed_at = datetime.datetime.utcnow()
+        # Past the last question — check if any pending remain
+        first_pending = _first_pending_question_index(all_qs)
+        if first_pending is not None:
+            state.current_question_index = first_pending
+            state.current_module = all_qs[first_pending].module_type
+        else:
+            state.current_question_index = len(all_qs)  # past last
+            # Mark cycle completed
+            cycle = db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first()
+            if cycle:
+                _compute_cycle_completion(db, cycle)
         state.updated_at = datetime.datetime.utcnow()
 
     db.commit()
 
-    # Check if we've reached the end
-    if next_index >= len(all_qs):
+    # Check if finished
+    remaining_pending = _first_pending_question_index(all_qs)
+    if remaining_pending is None:
         return RedirectResponse(url="/study/current", status_code=303)
 
-    # Show feedback and auto-redirect
+    # Show feedback and link to next question
     return templates.TemplateResponse(
         request, "base.html",
         {
             "content": (
-                f"<div class='card'><h3>反馈</h3><p>{feedback}</p></div>"
+                f"{feedback_html}"
                 "<a href='/study/current' class='btn btn-primary'>下一题</a>"
             )
         },
     )
+
+
+# =============================================================================
+# POST /study/skip_module — skip the current module
+# =============================================================================
+
+@router.post("/skip_module")
+async def skip_current_module(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Skip all unanswered questions in the current module."""
+    state = _get_or_create_session_state(db)
+    if not state.current_cycle_id or not state.current_module:
+        return HTMLResponse("No active cycle or module", status_code=400)
+
+    all_qs = _get_sorted_cycle_questions(db, state.current_cycle_id)
+    mod_qs = _get_module_questions(all_qs, state.current_module)
+    pending_in_mod = [q for q in mod_qs if q.status == "pending"]
+
+    if not pending_in_mod:
+        return RedirectResponse(url="/study/current", status_code=303)
+
+    # Mark all pending questions in this module as skipped
+    for q in pending_in_mod:
+        q.status = "skipped"
+        q.answered_at = datetime.datetime.utcnow()
+        # Do NOT set user_answer or is_correct — unanswered skipped questions
+        # must not create weak points
+    db.commit()
+
+    # Advance to next module with pending questions
+    next_mod = _find_next_module(all_qs, state.current_module)
+    if next_mod is not None:
+        state.current_module = next_mod
+        first_idx = _first_pending_question_index(all_qs)
+        state.current_question_index = first_idx if first_idx is not None else len(all_qs)
+    else:
+        # No more modules with pending questions — all done
+        first_pending = _first_pending_question_index(all_qs)
+        if first_pending is not None:
+            state.current_question_index = first_pending
+        else:
+            state.current_question_index = len(all_qs)
+            cycle = db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first()
+            if cycle:
+                _compute_cycle_completion(db, cycle)
+    state.updated_at = datetime.datetime.utcnow()
+    db.commit()
+
+    return RedirectResponse(url="/study/current", status_code=303)
+
+
+# =============================================================================
+# POST /study/mark_studied — mark current module as already studied
+# =============================================================================
+
+@router.post("/mark_studied")
+async def mark_current_module_studied(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Mark all unanswered questions in the current module as studied."""
+    state = _get_or_create_session_state(db)
+    if not state.current_cycle_id or not state.current_module:
+        return HTMLResponse("No active cycle or module", status_code=400)
+
+    all_qs = _get_sorted_cycle_questions(db, state.current_cycle_id)
+    mod_qs = _get_module_questions(all_qs, state.current_module)
+    pending_in_mod = [q for q in mod_qs if q.status == "pending"]
+
+    if not pending_in_mod:
+        return RedirectResponse(url="/study/current", status_code=303)
+
+    # Mark all pending questions in this module as studied
+    for q in pending_in_mod:
+        q.status = "studied"
+        q.answered_at = datetime.datetime.utcnow()
+        # Do NOT set user_answer or is_correct — studied unanswered questions
+        # must not create weak points
+    db.commit()
+
+    # Advance to next module with pending questions
+    next_mod = _find_next_module(all_qs, state.current_module)
+    if next_mod is not None:
+        state.current_module = next_mod
+        first_idx = _first_pending_question_index(all_qs)
+        state.current_question_index = first_idx if first_idx is not None else len(all_qs)
+    else:
+        first_pending = _first_pending_question_index(all_qs)
+        if first_pending is not None:
+            state.current_question_index = first_pending
+        else:
+            state.current_question_index = len(all_qs)
+            cycle = db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first()
+            if cycle:
+                _compute_cycle_completion(db, cycle)
+    state.updated_at = datetime.datetime.utcnow()
+    db.commit()
+
+    return RedirectResponse(url="/study/current", status_code=303)
 
 
 # =============================================================================
@@ -498,35 +888,21 @@ async def study_progress(
             {"content": "<p>还没有开始学习。</p><a href='/materials' class='btn btn-primary'>去素材列表</a>"},
         )
 
-    all_qs = (
-        db.query(QuestionAttempt)
-        .filter(QuestionAttempt.cycle_id == state.current_cycle_id)
-        .order_by(QuestionAttempt.id)
-        .all()
-    )
-    total = len(all_qs)
-    answered = sum(1 for q in all_qs if q.answered_at is not None)
-    correct = sum(1 for q in all_qs if q.is_correct)
+    stats = _compute_cycle_completion(db, db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first())
+    all_qs = _get_sorted_cycle_questions(db, state.current_cycle_id)
 
     return templates.TemplateResponse(
         request, "study_result.html",
         {
             "cycle": db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first(),
-            "total": total,
-            "answered": answered,
-            "correct": correct,
-            "accuracy": round(correct / total * 100, 1) if answered > 0 else 0,
+            "total": stats["total"],
+            "answered": stats["answered"],
+            "correct": stats["correct"],
+            "accuracy": stats["accuracy"],
             "questions": all_qs,
-            "in_progress": answered < total,
+            "in_progress": not stats["is_done"],
+            "had_skipped_module": stats["had_skipped_module"],
+            "is_valid_completion": stats["is_valid_completion"],
+            "module_statuses": stats["module_statuses"],
         },
     )
-
-
-# =============================================================================
-# GET /study — placeholder root
-# =============================================================================
-
-@router.get("", response_class=HTMLResponse)
-async def study_home(request: Request):
-    """Redirect to current question or progress."""
-    return RedirectResponse(url="/study/current")

@@ -33,3 +33,4 @@ Thumbs.db
 # Distribution
 dist/
 *.egg-info/
+data/lingua.db
