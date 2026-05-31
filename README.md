@@ -45,12 +45,12 @@ Open http://localhost:8000/materials
 
 ## Cost Summary
 
-| Activity | Approx Tokens | Approx Cost |
-|----------|-------------|------------|
-| Material extraction (grammar + vocab) | ~5,500 | ~$0.001 |
-| One full study cycle (generation + 10 evaluations) | ~9,650 | ~$0.002 |
-| 3 cycles + extraction | ~34,000 | ~$0.007 |
-| Full Day 3 verification (84 API calls) | 58,217 | ~$0.011 |
+| Activity | Approx Tokens | Approx Cost | Source |
+|----------|-------------|------------|--------|
+| Material extraction (grammar + vocab) | ~5,500 | ~$0.001 | 估算（Day 1 未追踪） |
+| One full study cycle (generation + 10 evaluations) | ~9,650 | ~$0.002 | 实测（Day 3 usage_logs） |
+| 3 cycles + extraction | ~35,500 | ~$0.007 | 实测+估算混合 |
+| Full Day 3 verification (84 API calls) | 58,217 | ~$0.011 | 实测（usage_logs） |
 
 Pricing based on DeepSeek V4 Flash: $0.14/1M input, $0.28/1M output (cache miss rates).
 Pricing source: https://api-docs.deepseek.com/quick_start/pricing (retrieved 2026-05-31)
@@ -105,6 +105,7 @@ lingua-web/
 1. Pre-generate grammar explanations during start_cycle (avoid on-demand API failures)
 2. Stronger review-priority hints to LLM (specify exact grammar points for review slots)
 3. Weak point decay mechanism (time-based or correct-answer-based deactivation)
+4. **Model alias migration** — `app/llm.py` uses `deepseek-chat` (compatibility alias → `deepseek-v4-flash`). Change to explicit `deepseek-v4-flash` before the alias is deprecated.
 
 ### P3 (beyond prototype scope)
 1. Listening exercises (Whisper STT + TTS)
