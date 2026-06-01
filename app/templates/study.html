@@ -49,6 +49,52 @@ function startGeneration() {
 startGeneration();
 </script>
 
+{% elif mc_retry %}
+{# Phase 5B: MC generation failure — retry feedback #}
+<div class="card" id="mc-retry-area">
+    <div class="meta" style="margin-bottom: 0.75rem;">
+        <strong>模块：</strong>{{ module_name }}
+        | <strong>进度：</strong>{{ question.index }}/{{ question.total }}
+        {% if question.answered > 0 %}
+        | <strong>已答：</strong>{{ question.answered }} 题
+        {% endif %}
+    </div>
+    <div id="mc-failure-state" style="text-align: center; padding: 2rem;">
+        <p style="font-size: 1.1rem; color: #e74c3c;">选择题生成失败，请重试。</p>
+        <button id="mc-retry-btn" class="btn btn-primary" onclick="startMcRetry()">重新生成</button>
+    </div>
+    <div id="mc-retrying-state" style="text-align: center; padding: 2rem; display: none;">
+        <p style="font-size: 1.1rem; color: #555;">正在重新生成选择题，请稍候……</p>
+    </div>
+</div>
+<script>
+function startMcRetry() {
+    var failEl = document.getElementById('mc-failure-state');
+    var retryingEl = document.getElementById('mc-retrying-state');
+    var retryBtn = document.getElementById('mc-retry-btn');
+    if (retryingEl) retryingEl.style.display = 'block';
+    if (failEl) failEl.style.display = 'none';
+    if (retryBtn) retryBtn.disabled = true;
+
+    fetch('/study/regenerate_mc', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d.ok) {
+                window.location.href = '/study/current';
+            } else {
+                if (retryingEl) retryingEl.style.display = 'none';
+                if (failEl) failEl.style.display = 'block';
+                if (retryBtn) retryBtn.disabled = false;
+            }
+        })
+        .catch(function() {
+            if (retryingEl) retryingEl.style.display = 'none';
+            if (failEl) failEl.style.display = 'block';
+            if (retryBtn) retryBtn.disabled = false;
+        });
+}
+</script>
+
 {% else %}
 
 {% if explanation_html %}

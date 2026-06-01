@@ -862,6 +862,23 @@ async def current_question(
                 },
             )
 
+    # Phase 5B: MC generation failure — show retry feedback instead of blank question
+    if current_q.module_type == "multiple_choice" and current_q.status == "generation_failed":
+        return templates.TemplateResponse(
+            request, "study.html",
+            {
+                "mc_retry": True,
+                "mc_failed": True,
+                "module_name": MODULE_LABELS.get(state.current_module, ""),
+                "question": {
+                    "index": state.current_question_index + 1,
+                    "total": total,
+                    "answered": sum(1 for q in all_qs if q.status == "answered"),
+                    "correct": sum(1 for q in all_qs if q.is_correct),
+                },
+            },
+        )
+
     current_q = all_qs[state.current_question_index]
     answered_count = sum(1 for q in all_qs if q.status == "answered")
     correct_count = sum(1 for q in all_qs if q.is_correct)
@@ -1876,6 +1893,67 @@ async def generate_module(
 
     result = _batch_generate_module_translations(db, cycle, module)
     return result
+
+
+# =============================================================================
+# Phase 5B: POST /study/regenerate_mc — retry current failed MC slot only
+# =============================================================================
+
+@router.post("/regenerate_mc")
+async def regenerate_current_mc(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Regenerate only the current failed multiple-choice slot.
+
+    Only accepts slots in generation_failed status.
+    Returns JSON: {ok, error?}.
+    """
+    state = _get_or_create_session_state(db)
+    if not state.current_cycle_id or state.current_module != "multiple_choice":
+        return {"ok": False, "error": "not_in_mc_module"}
+
+    all_qs = _get_sorted_cycle_questions(db, state.current_cycle_id)
+    next_idx = state.current_question_index
+    if next_idx >= len(all_qs):
+        return {"ok": False, "error": "index_out_of_range"}
+
+    current_q = all_qs[next_idx]
+    if current_q.module_type != "multiple_choice":
+        return {"ok": False, "error": "not_current_mc_slot"}
+    if current_q.status not in ("generation_failed",):
+        return {"ok": False, "error": "not_retryable"}
+    if current_q.answered_at is not None:
+        return {"ok": False, "error": "already_answered"}
+
+    # Atomic claim: generation_failed → generating (prevents concurrent retry)
+    rows = db.query(QuestionAttempt).filter(
+        QuestionAttempt.id == current_q.id,
+        QuestionAttempt.status == "generation_failed",
+    ).update({"status": "generating", "generation_started_at": datetime.datetime.utcnow()})
+    if rows == 0:
+        return {"ok": False, "error": "claim_failed"}
+    db.commit()
+
+    cycle = db.query(StudyCycle).filter(
+        StudyCycle.id == state.current_cycle_id
+    ).first()
+    if not cycle or cycle.completed_at:
+        # Restore generation_failed if cycle became invalid
+        db.query(QuestionAttempt).filter(
+            QuestionAttempt.id == current_q.id
+        ).update({"status": "generation_failed"})
+        db.commit()
+        return {"ok": False, "error": "cycle_not_active"}
+
+    ga, gb, review_points = _get_cycle_grammar_points(db, cycle)
+    material_ids = [cm.material_id for cm in db.query(CycleMaterial).filter(
+        CycleMaterial.cycle_id == cycle.id).all()]
+    _, globally_mastered_names = _build_combined_grammar_pool(db, material_ids)
+
+    # _generate_slot_content transitions to pending (ok) or generation_failed (fail)
+    success = _generate_slot_content(db, current_q, ga, gb, review_points, globally_mastered_names)
+    return {"ok": success}
 
 
 @router.post("/candidate/{candidate_id}/add")
