@@ -513,3 +513,85 @@ def test_record_weak_point_without_cycle_does_not_create_event(db):
     _record_weak_point(db, "〜てはいられない")  # No cycle context
     events = db.query(WeakPointEvent).all()
     assert len(events) == 0, "No event should be created without cycle context"
+
+
+# ===========================================================================
+# Voided event exclusion from progress counts
+# ===========================================================================
+
+def test_voided_event_excluded_from_summary_counts(db, populated_material):
+    """
+    A voided WeakPointEvent must be excluded from both new-wp and re-hit-wp
+    counts in cycle summaries. It must remain queryable for audit history.
+    """
+    from app.routes.study import _get_historical_cycle_summaries, _compute_cycle_completion
+
+    gp = db.query(GrammarPoint).first()
+    cycle = StudyCycle(grammar_a_id=gp.id, grammar_b_id=gp.id,
+                       started_at=datetime.datetime.utcnow())
+    db.add(cycle)
+    db.commit()
+    db.refresh(cycle)
+    cycle_id = cycle.id
+
+    # Record a created event
+    _record_weak_point(db, "〜voided_test", cycle_id=cycle_id,
+                       source_type="translation_low_score_target_grammar",
+                       attempt_id=99901)
+    # Record a hit_existing event
+    _record_weak_point(db, "〜voided_test", cycle_id=cycle_id,
+                       source_type="translation_low_score_target_grammar",
+                       attempt_id=99902)
+
+    # Verify summary before voiding
+    cycle.completed_at = datetime.datetime.utcnow()
+    db.commit()
+    summaries = _get_historical_cycle_summaries(db)
+    this = [s for s in summaries if s["id"] == cycle_id]
+    assert len(this) == 1, "Cycle should appear in summaries"
+
+    pre_summary = this[0]
+    # Before voiding: 1 created, 1 hit_existing
+    assert pre_summary["new_wp"] == 1, f"Expected new_wp=1 before void, got {pre_summary['new_wp']}"
+    assert pre_summary["re_hit_wp"] == 1, f"Expected re_hit_wp=1 before void, got {pre_summary['re_hit_wp']}"
+
+    # Now void the hit_existing event
+    event_to_void = (
+        db.query(WeakPointEvent)
+        .filter(
+            WeakPointEvent.cycle_id == cycle_id,
+            WeakPointEvent.event_type == "hit_existing"
+        )
+        .first()
+    )
+    assert event_to_void is not None, "hit_existing event should exist"
+    event_id = event_to_void.id
+    event_to_void.event_type = "voided"
+    db.commit()
+
+    # Verify voided event is still queryable
+    still_there = db.query(WeakPointEvent).filter(WeakPointEvent.id == event_id).first()
+    assert still_there is not None, "Voided event must remain queryable in DB"
+    assert still_there.event_type == "voided", "Event should still show voided type"
+
+    # Re-query summaries
+    summaries2 = _get_historical_cycle_summaries(db)
+    this2 = [s for s in summaries2 if s["id"] == cycle_id]
+    assert len(this2) == 1
+
+    post_summary = this2[0]
+    # After voiding hit_existing → 1 created, 0 hit_existing, voided excluded from both
+    assert post_summary["new_wp"] == 1, (
+        f"new_wp should still be 1 (created event unchanged), got {post_summary['new_wp']}"
+    )
+    assert post_summary["re_hit_wp"] == 0, (
+        f"re_hit_wp should be 0 (hit_existing was voided), got {post_summary['re_hit_wp']}"
+    )
+
+    # Clean up test data (isolated temp DB — no real DB impact)
+    db.query(WeakPointEvent).filter(WeakPointEvent.cycle_id == cycle_id).delete()
+    db.query(WeakPoint).filter(
+        WeakPoint.point_reference == "〜voided_test"
+    ).delete()
+    db.query(StudyCycle).filter(StudyCycle.id == cycle_id).delete()
+    db.commit()
