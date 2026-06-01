@@ -23,7 +23,7 @@ from app.db import init_db, SessionLocal
 from app.models import (
     Material, GrammarPoint, StudyCycle, CycleMaterial,
     QuestionAttempt, SessionState, WeakPoint,
-    TranslationErrorCandidate,
+    TranslationErrorCandidate, WeakPointEvent,
 )
 from app.main import app
 
@@ -39,8 +39,10 @@ class MockExp:
         self.example_sentences = ["例文1"]
 
 class MockTrans:
+    _call_count = 0
     def __init__(self):
-        self.prompt_zh = "翻译题"
+        MockTrans._call_count += 1
+        self.prompt_zh = f"翻译题 {MockTrans._call_count}"
         self.reference_answer_ja = "答え"
         self.grading_notes = "使用目标语法"
         self.grammar_point = "〜てはいられない"
@@ -71,6 +73,10 @@ def setup_temp_db():
     yield
     os.unlink(_tmp_db.name)
 
+@pytest.fixture(autouse=True)
+def reset_counter():
+    MockTrans._call_count = 0
+
 @pytest.fixture
 def db():
     session = SessionLocal()
@@ -92,13 +98,14 @@ def mock_deepseek():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=10)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
 @pytest.fixture
 def populated_material(db):
     from app.models import TranslationErrorCandidate
+    db.query(WeakPointEvent).delete()
     db.query(TranslationErrorCandidate).delete()
     db.query(WeakPoint).delete()
     db.query(QuestionAttempt).delete()
@@ -219,9 +226,13 @@ def test_completed_cycle_appears_in_history(client, db, populated_material, mock
     """Completed cycle appears in historical summary."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     # Answer all 19 questions
-    for i in range(10):
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"t{i+5}"}, follow_redirects=False)
     for i in range(9):
         client.post("/study/answer", data={"answer": "A"}, follow_redirects=False)
     resp = client.get("/study/progress")
@@ -244,8 +255,12 @@ def test_historical_cycle_shows_score(client, db, populated_material, mock_deeps
     """Phase 4A completed cycle shows valid final score."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
-    for i in range(10):
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"t{i+5}"}, follow_redirects=False)
     for i in range(9):
         client.post("/study/answer", data={"answer": "A"}, follow_redirects=False)
     resp = client.get("/study/progress")
@@ -299,6 +314,7 @@ def test_phase4a_nonregression_sanity(client, db, populated_material, mock_deeps
     """Basic Phase 4A scoring still works."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     resp = client.post("/study/answer", data={"answer": "test"}, follow_redirects=False)
     state = db.query(SessionState).first()
     q = db.query(QuestionAttempt).filter(
@@ -435,8 +451,12 @@ def test_scenario_007_completed_cycle_in_history(client, db, populated_material,
     """SCENARIO-007: Completed cycle in history; no current cycle shows empty state."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
-    for i in range(10):
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"t{i+5}"}, follow_redirects=False)
     for i in range(9):
         client.post("/study/answer", data={"answer": "A"}, follow_redirects=False)
     # Cycle is now complete; verify:
@@ -450,8 +470,12 @@ def test_scenario_008_phase4a_cycle_heart_score(client, db, populated_material, 
     """SCENARIO-008: Completed Phase 4A cycle shows valid heart-based score."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
-    for i in range(10):
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"t{i+5}"}, follow_redirects=False)
     for i in range(9):
         client.post("/study/answer", data={"answer": "A"}, follow_redirects=False)
     from app.routes.study import _compute_final_cycle_score

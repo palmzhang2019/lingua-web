@@ -248,8 +248,10 @@ def _cancel_mastered_cycle_questions(
             continue
         payload = q.question_payload_json or {}
         q_gp_name = (payload.get("grammar_point") or "").lower().strip().lstrip("〜")
-        # Check grammar_point field or grammar_point_id match
-        if q_gp_name == grammar_point_name_lower or q_gp_name == str(grammar_point_id):
+        # Check grammar_point field, target_grammar_id, or grammar_point_id match
+        if (q_gp_name == grammar_point_name_lower
+            or q_gp_name == str(grammar_point_id)
+            or (not q_gp_name and q.target_grammar_id == grammar_point_id)):
             q.status = "cancelled_mastered"
             q.answered_at = datetime.datetime.utcnow()
             changed = True
@@ -673,47 +675,11 @@ async def start_cycle(
         db.add(slot)
     db.commit()
 
-    # ---- Generate only question 1 synchronously -----------------------------
-    db.refresh(cycle)
-    all_qs = _get_sorted_cycle_questions(db, cycle.id)
-    q1 = all_qs[0] if all_qs else None
-
-    if q1:
-        # Update the slot's question_payload_json to set type
-        q1.question_payload_json = {"type": "translation"}
-        success = _generate_slot_content(
-            db, q1, grammar_a, grammar_b, prioritized_review, globally_mastered_names
-        )
-        if not success:
-            # Clean up: remove failed cycle
-            db.query(QuestionAttempt).filter(
-                QuestionAttempt.cycle_id == cycle.id
-            ).delete()
-            db.query(CycleMaterial).filter(
-                CycleMaterial.cycle_id == cycle.id
-            ).delete()
-            db.delete(cycle)
-            # Clear session state if it was pointing to this cycle
-            state = _get_or_create_session_state(db)
-            if state.current_cycle_id == cycle.id:
-                state.current_cycle_id = None
-                state.current_module = None
-                state.current_question_index = 0
-            db.commit()
-
-            return templates.TemplateResponse(
-                request, "base.html",
-                {
-                    "content": (
-                        "<div class='card flash-error'>"
-                        "<strong>生成首题失败：</strong>无法生成学习内容，请重试。"
-                        "</div>"
-                        "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
-                    )
-                },
-                status_code=500,
-            )
-
+    # ---- Phase 5A: Do not synchronously generate Q1.
+    #          All 19 slots remain planned. /study/current shows loading +
+    #          async POST /study/generate_module for the initial translation module.
+    #          This eliminates the synchronous LLM wait during start_cycle and
+    #          lets the batch-generation loading UI handle first-question visibility.
     # ---- Initialize session state -------------------------------------------
     state = _get_or_create_session_state(db)
     state.current_cycle_id = cycle.id
@@ -877,6 +843,24 @@ async def current_question(
     # Phase 4A: Review gate — if about to enter MC but candidates pending, redirect
     if current_q.module_type == "multiple_choice" and _check_review_gate(db, cycle.id):
         return RedirectResponse(url="/study/review_candidates", status_code=303)
+
+    # Phase 5A: Translation module entry — if current question not ready, show loading UI
+    if current_q.module_type in ("grammar_a_translation", "grammar_b_translation"):
+        if current_q.status not in ("pending",):
+            progress_label = MODULE_LABELS.get(state.current_module, "")
+            return templates.TemplateResponse(
+                request, "study.html",
+                {
+                    "loading": True,
+                    "module_name": progress_label,
+                    "question": {
+                        "index": state.current_question_index + 1,
+                        "total": total,
+                        "answered": sum(1 for q in all_qs if q.status == "answered"),
+                        "correct": sum(1 for q in all_qs if q.is_correct),
+                    },
+                },
+            )
 
     current_q = all_qs[state.current_question_index]
     answered_count = sum(1 for q in all_qs if q.status == "answered")
@@ -1344,6 +1328,10 @@ def _ensure_next_question_generated(
         return True  # No more questions needing generation
 
     next_q = all_qs[next_idx]
+    # Phase 5A: Translation slots are generated asynchronously via
+    # POST /study/generate_module. /study/current shows loading + retry UI.
+    if next_q.module_type in ("grammar_a_translation", "grammar_b_translation"):
+        return True  # Don't block — async flow handles this
     if next_q.status in ("planned", "generation_failed"):
         ga, gb, review_points = _get_cycle_grammar_points(db, cycle)
         material_ids = [cm.material_id for cm in db.query(CycleMaterial).filter(
@@ -1729,6 +1717,165 @@ async def review_candidates_page(request: Request, db: Session = Depends(get_db)
     return templates.TemplateResponse(
         request, "review_candidates.html", {"candidates": candidates},
     )
+
+
+# =============================================================================
+# Phase 5A: Duplicate guard for translation prompts
+# =============================================================================
+
+def _is_exact_duplicate(
+    module_type: str, prompt_zh: str, db: Session, cycle_id: int,
+) -> bool:
+    """Check if *prompt_zh* already exists in another same-module, same-cycle slot.
+
+    Only compares exact string equality within the same 5-question translation
+    module. Does not compare across modules, cycles, or use semantic similarity.
+    """
+    if not prompt_zh:
+        return False
+    all_qs = _get_sorted_cycle_questions(db, cycle_id)
+    for q in all_qs:
+        if q.module_type != module_type:
+            continue
+        if q.status not in ("pending", "answered"):
+            continue
+        payload = q.question_payload_json or {}
+        existing = (payload.get("prompt_zh") or "").strip()
+        if existing == prompt_zh.strip():
+            return True
+    return False
+
+
+# =============================================================================
+# Phase 5A: Batch-generate missing translation questions for current module
+# =============================================================================
+
+def _batch_generate_module_translations(
+    db: Session, cycle: StudyCycle, module_type: str,
+) -> dict:
+    """Async-friendly batch generation of missing translation slots.
+
+    Returns dict with:
+      ok: bool       — True if at least one answerable slot was produced
+      generated: int — number of slots successfully made pending
+      total: int     — number of eligible (missing) slots found
+      error: str|None
+    """
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
+    # Eligible = slots in this module not yet valid
+    eligible = [
+        q for q in all_qs
+        if q.module_type == module_type
+        and q.status in ("planned", "generation_failed")
+    ]
+    if not eligible:
+        return {"ok": True, "generated": 0, "total": 0, "error": None}
+
+    # Determine target grammar point
+    ga = db.query(GrammarPoint).filter(GrammarPoint.id == cycle.grammar_a_id).first()
+    gb = db.query(GrammarPoint).filter(GrammarPoint.id == cycle.grammar_b_id).first()
+    target_gp = ga if "grammar_a" in module_type else gb
+    if not target_gp:
+        for q in eligible:
+            q.status = "generation_failed"
+            q.generation_error = "Target grammar not found"
+        db.commit()
+        return {"ok": False, "generated": 0, "total": len(eligible),
+                "error": "Target grammar not found"}
+
+    # Call LLM for exactly the number of missing slots.
+    # Use the module-level reference (patched by test mocks).
+    import app.routes.study as _rs
+    results = []
+    for _ in range(len(eligible)):
+        try:
+            ex = _rs.generate_one_translation(target_gp)
+        except Exception:
+            break
+        if ex:
+            results.append(ex)
+        else:
+            break
+
+    if not results:
+        # Complete failure
+        for q in eligible:
+            q.status = "generation_failed"
+            q.generation_error = "Batch generation failed"
+        db.commit()
+        return {"ok": False, "generated": 0, "total": len(eligible),
+                "error": "Generation returned no results"}
+
+    from app.schemas import QuestionPayload
+    accepted = 0
+    result_iter = iter(results)
+
+    for slot in eligible:
+        try:
+            ex = next(result_iter)
+        except StopIteration:
+            # Fewer results than eligible slots — remaining stay planned
+            break
+
+        # Exact duplicate check
+        if _is_exact_duplicate(module_type, ex.prompt_zh, db, cycle.id):
+            slot.generation_error = f"Duplicate prompt: {ex.prompt_zh[:60]}"
+            # Slot stays planned — eligible for retry
+            continue
+
+        # Write valid question
+        qp = QuestionPayload(
+            type="translation",
+            prompt_zh=ex.prompt_zh,
+            reference_answer_ja=ex.reference_answer_ja,
+            grading_notes=ex.grading_notes,
+            grammar_point=ex.grammar_point,
+        ).model_dump()
+        slot.question_payload_json = qp
+        slot.correct_answer = ex.reference_answer_ja
+        slot.status = "pending"
+        slot.generation_error = None
+        db.commit()
+        accepted += 1
+
+    db.commit()
+    return {"ok": accepted > 0, "generated": accepted, "total": len(eligible),
+            "error": None}
+
+
+# =============================================================================
+# Phase 5A: POST /study/generate_module — async batch generation endpoint
+# =============================================================================
+
+@router.post("/generate_module")
+async def generate_module(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Generate all missing translation questions for the current module.
+
+    Called asynchronously from the loading page.
+    Returns JSON: {ok, generated, total, error}.
+    """
+    state = _get_or_create_session_state(db)
+    if not state.current_cycle_id or not state.current_module:
+        return {"ok": False, "generated": 0, "total": 0,
+                "error": "no_active_cycle"}
+
+    module = state.current_module
+    if module not in ("grammar_a_translation", "grammar_b_translation"):
+        return {"ok": False, "generated": 0, "total": 0,
+                "error": "not_a_translation_module"}
+
+    cycle = db.query(StudyCycle).filter(
+        StudyCycle.id == state.current_cycle_id
+    ).first()
+    if not cycle or cycle.completed_at:
+        return {"ok": False, "generated": 0, "total": 0,
+                "error": "cycle_not_active"}
+
+    result = _batch_generate_module_translations(db, cycle, module)
+    return result
 
 
 @router.post("/candidate/{candidate_id}/add")

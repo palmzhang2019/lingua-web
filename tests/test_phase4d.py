@@ -41,8 +41,10 @@ class MockExp:
         self.example_sentences = ["例文1"]
 
 class MockTrans:
+    _call_count = 0
     def __init__(self):
-        self.prompt_zh = "翻译题"
+        MockTrans._call_count += 1
+        self.prompt_zh = f"翻译题 {MockTrans._call_count}"
         self.reference_answer_ja = "答え"
         self.grading_notes = "使用目标语法"
         self.grammar_point = "〜てはいられない"
@@ -99,6 +101,10 @@ def db():
 def client():
     return TestClient(app)
 
+@pytest.fixture(autouse=True)
+def reset_counter():
+    MockTrans._call_count = 0
+
 @pytest.fixture
 def mock_pass():
     """score_hearts=10, tgc=true, no errors — perfect pass."""
@@ -108,7 +114,7 @@ def mock_pass():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=10, target_grammar_correct=True)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -121,7 +127,7 @@ def mock_pass_6():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=6, target_grammar_correct=True)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -134,7 +140,7 @@ def mock_fail_5():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=5, target_grammar_correct=False)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -153,7 +159,7 @@ def mock_pass_6_with_errors():
             ]
         )
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -166,7 +172,7 @@ def mock_contradictory():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=5, target_grammar_correct=True)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -179,7 +185,7 @@ def mock_inverse_contradictory():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=6, target_grammar_correct=False)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -194,7 +200,7 @@ def mock_missing_tgc():
         del ev.target_grammar_correct
         mev2.return_value = ev
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -207,7 +213,7 @@ def mock_none():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = None
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -273,6 +279,7 @@ def test_tgc_true_6_hearts_is_valid_and_passed(client, db, populated_material, m
     """tgc=true + score=6: valid, passed (is_correct=True), no auto weak point."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A: generate GA questions
     client.post("/study/answer", data={"answer": "test"}, follow_redirects=False)
     state = db.query(SessionState).first()
     qa = db.query(QuestionAttempt).filter(
@@ -291,6 +298,7 @@ def test_tgc_true_10_hearts_is_valid_and_passed(client, db, populated_material, 
     """tgc=true + score=10: valid, passed."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     client.post("/study/answer", data={"answer": "perfect"}, follow_redirects=False)
     state = db.query(SessionState).first()
     qa = db.query(QuestionAttempt).filter(
@@ -303,6 +311,7 @@ def test_tgc_false_5_hearts_is_valid_and_failed(client, db, populated_material, 
     """tgc=false + score=5: valid, failed, auto creates weak point."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     client.post("/study/answer", data={"answer": "bad"}, follow_redirects=False)
     state = db.query(SessionState).first()
     qa = db.query(QuestionAttempt).filter(
@@ -326,10 +335,11 @@ def test_tgc_false_0_hearts_is_valid(client, db, populated_material, mock_fail_5
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=0, target_grammar_correct=False)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         client.post("/study/start_cycle", data={"material_id": populated_material.id},
                     follow_redirects=False)
+        client.post("/study/generate_module")  # PHASE 5A
         client.post("/study/answer", data={"answer": "完全错误"}, follow_redirects=False)
     state = db.query(SessionState).first()
     qa = db.query(QuestionAttempt).filter(
@@ -348,6 +358,7 @@ def test_tgc_true_5_rejected_without_persistence(client, db, populated_material,
     """tgc=true + score=5: rejected — no persistence, no side effects."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     state = db.query(SessionState).first()
     cycle_id = state.current_cycle_id
     resp = client.post("/study/answer", data={"answer": "contradictory"}, follow_redirects=False)
@@ -369,6 +380,7 @@ def test_tgc_false_6_rejected_without_persistence(client, db, populated_material
     """tgc=false + score=6: rejected — no persistence, no side effects."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     state = db.query(SessionState).first()
     cycle_id = state.current_cycle_id
     resp = client.post("/study/answer", data={"answer": "inverse"}, follow_redirects=False)
@@ -385,6 +397,7 @@ def test_missing_tgc_rejected(client, db, populated_material, mock_missing_tgc):
     """Missing target_grammar_correct: rejected like a grading failure."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     state = db.query(SessionState).first()
     cycle_id = state.current_cycle_id
     resp = client.post("/study/answer", data={"answer": "missing"}, follow_redirects=False)
@@ -401,6 +414,7 @@ def test_none_grading_still_rejected(client, db, populated_material, mock_none):
     """Evaluation returning None is still a controlled failure (unchanged behavior)."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     state = db.query(SessionState).first()
     cycle_id = state.current_cycle_id
     resp = client.post("/study/answer", data={"answer": "fail"}, follow_redirects=False)
@@ -421,6 +435,7 @@ def test_tgc_true_6_does_not_create_weak_point(client, db, populated_material, m
     """tgc=true + score=6: no target grammar weak point."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     client.post("/study/answer", data={"answer": "passing"}, follow_redirects=False)
     wp = db.query(WeakPoint).filter(
         WeakPoint.point_reference == "〜てはいられない"
@@ -431,6 +446,7 @@ def test_tgc_true_6_with_errors_creates_candidates_only(client, db, populated_ma
     """tgc=true + score=6 + additional errors: candidates created, no weak point."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     client.post("/study/answer", data={"answer": "passing but errors"}, follow_redirects=False)
     # No target grammar weak point
     wp = db.query(WeakPoint).filter(
@@ -446,6 +462,7 @@ def test_tgc_false_5_creates_weak_point_and_event(client, db, populated_material
     """tgc=false + score=5: weak point + WeakPointEvent created."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     state = db.query(SessionState).first()
     cycle_id = state.current_cycle_id
     client.post("/study/answer", data={"answer": "failing"}, follow_redirects=False)
@@ -471,14 +488,19 @@ def test_6_hearts_contributes_60_percent(client, db, populated_material, mock_pa
     from app.routes.study import _compute_final_cycle_score, _compute_cycle_completion
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
-    state = db.query(SessionState).first()
-    cycle_id = state.current_cycle_id
-    client.post("/study/answer", data={"answer": "test"}, follow_redirects=False)
-    # Answer all remaining questions to complete cycle
-    for i in range(9):
-        client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
+    client.post("/study/generate_module")  # GA (Phase 5A)
+    # Answer GA Q1-Q5
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"ga{i}"}, follow_redirects=False)
+    client.post("/study/generate_module")  # GB
+    # Answer GB Q6-Q10
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"gb{i}"}, follow_redirects=False)
+    # Answer MC questions
     for i in range(9):
         client.post("/study/answer", data={"answer": "A"}, follow_redirects=False)
+    state = db.query(SessionState).first()
+    cycle_id = state.current_cycle_id
     cycle = db.query(StudyCycle).filter(StudyCycle.id == cycle_id).first()
     _compute_cycle_completion(db, cycle)
     score = _compute_final_cycle_score(db, cycle)
@@ -492,13 +514,19 @@ def test_5_hearts_contributes_50_percent(client, db, populated_material, mock_fa
     from app.routes.study import _compute_final_cycle_score, _compute_cycle_completion
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
-    state = db.query(SessionState).first()
-    cycle_id = state.current_cycle_id
-    client.post("/study/answer", data={"answer": "bad"}, follow_redirects=False)
-    for i in range(9):
-        client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
+    client.post("/study/generate_module")  # GA (Phase 5A)
+    # Answer GA Q1-Q5
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"ga{i}"}, follow_redirects=False)
+    client.post("/study/generate_module")  # GB
+    # Answer GB Q6-Q10
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"gb{i}"}, follow_redirects=False)
+    # Answer MC questions
     for i in range(9):
         client.post("/study/answer", data={"answer": "A"}, follow_redirects=False)
+    state = db.query(SessionState).first()
+    cycle_id = state.current_cycle_id
     cycle = db.query(StudyCycle).filter(StudyCycle.id == cycle_id).first()
     _compute_cycle_completion(db, cycle)
     score = _compute_final_cycle_score(db, cycle)
@@ -508,6 +536,7 @@ def test_aggregate_score_hidden_during_learning(client, db, populated_material, 
     """Final score is not shown while cycle is in progress."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     resp = client.get("/study")
     assert "最终得分" not in resp.text
 
@@ -515,6 +544,7 @@ def test_6_hearts_passed_display(client, db, populated_material, mock_pass_6):
     """6-heart translation shows pass indicator in feedback."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     resp = client.post("/study/answer", data={"answer": "test"}, follow_redirects=False)
     assert "正确!" in resp.text or "❤️❤️❤️❤️❤️❤️" in resp.text
 
@@ -528,10 +558,14 @@ def test_additional_error_review_still_occurs(client, db, populated_material, mo
     from app.routes.study import _check_review_gate
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # GA (Phase 5A)
     # All mock_pass_6_with_errors returns score=6 + error for every call
     # So all 10 translations score 6 with errors -> candidates
-    for i in range(10):
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"a{i}"}, follow_redirects=False)
+    client.post("/study/generate_module")  # GB
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"a{i+5}"}, follow_redirects=False)
     state = db.query(SessionState).first()
     assert _check_review_gate(db, state.current_cycle_id) is True
 
@@ -540,8 +574,12 @@ def test_pending_candidates_still_block_choice(client, db, populated_material, m
     from app.routes.study import _check_review_gate
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
-    for i in range(10):
+    client.post("/study/generate_module")  # GA (Phase 5A)
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"a{i}"}, follow_redirects=False)
+    client.post("/study/generate_module")  # GB
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"a{i+5}"}, follow_redirects=False)
     state = db.query(SessionState).first()
     assert _check_review_gate(db, state.current_cycle_id) is True
 
@@ -549,9 +587,13 @@ def test_choice_wrong_answer_weak_point_unchanged(client, db, populated_material
     """MC wrong answers still create weak points (independent of translation)."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # GA (Phase 5A)
     # Answer all 10 translations (all pass with tgc=true, score=10)
-    for i in range(10):
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
+    client.post("/study/generate_module")  # GB
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"t{i+5}"}, follow_redirects=False)
     # No candidates (no additional errors in mock_pass)
     wp_before = db.query(WeakPoint).count()
     # Answer MC wrong (expected=A, send=B)
@@ -563,6 +605,7 @@ def test_weak_point_event_provenance_unchanged(client, db, populated_material, m
     """WeakPointEvent for tgc=false score=5 still records properly."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     state = db.query(SessionState).first()
     cycle_id = state.current_cycle_id
     client.post("/study/answer", data={"answer": "bad"}, follow_redirects=False)
@@ -585,13 +628,16 @@ def test_lazy_generation_unchanged(client, db, populated_material, mock_pass):
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
     ).order_by(QuestionAttempt.id).all()
-    # Slot 1 should be pending (generated by start_cycle)
+    client.post("/study/generate_module")  # PHASE 5A: generate GA questions
+    db.refresh(all_qs[0])
+    # Slot 1 should be pending (generated by generate_module)
     assert all_qs[0].status == "pending"
 
 def test_mermaid_progress_unchanged(client, db, populated_material, mock_pass):
     """Phase 4C Mermaid page still renders."""
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # PHASE 5A
     resp = client.get("/study/progress")
     assert resp.status_code == 200
     assert "当前进度" in resp.text

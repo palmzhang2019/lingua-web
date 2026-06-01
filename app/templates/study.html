@@ -2,6 +2,55 @@
 {% block title %}学习 — Lingua Web{% endblock %}
 {% block content %}
 
+{% if loading %}
+{# Phase 5A: Loading/retry state for translation generation #}
+<div class="card" id="gen-area">
+    <div class="meta" style="margin-bottom: 0.75rem;">
+        <strong>模块：</strong>{{ module_name }}
+        | <strong>进度：</strong>{{ question.index }}/{{ question.total }}
+        {% if question.answered > 0 %}
+        | <strong>已答：</strong>{{ question.answered }} 题
+        {% endif %}
+    </div>
+    <div id="loading-state" style="text-align: center; padding: 2rem;">
+        <p style="font-size: 1.1rem; color: #555;">正在为你生成练习题，预计需要 5～60 秒，请稍候……</p>
+    </div>
+    <div id="retry-state" style="text-align: center; padding: 2rem; display: none;">
+        <p style="font-size: 1.1rem; color: #e74c3c;">题目生成失败，请重试。</p>
+        <button id="retry-btn" class="btn btn-primary" onclick="startGeneration()">重试</button>
+    </div>
+</div>
+<script>
+function startGeneration() {
+    var loadEl = document.getElementById('loading-state');
+    var retryEl = document.getElementById('retry-state');
+    var retryBtn = document.getElementById('retry-btn');
+    if (loadEl) loadEl.style.display = 'block';
+    if (retryEl) retryEl.style.display = 'none';
+    if (retryBtn) retryBtn.disabled = true;
+
+    fetch('/study/generate_module', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d.ok) {
+                window.location.href = '/study/current';
+            } else {
+                if (loadEl) loadEl.style.display = 'none';
+                if (retryEl) retryEl.style.display = 'block';
+                if (retryBtn) retryBtn.disabled = false;
+            }
+        })
+        .catch(function() {
+            if (loadEl) loadEl.style.display = 'none';
+            if (retryEl) retryEl.style.display = 'block';
+            if (retryBtn) retryBtn.disabled = false;
+        });
+}
+startGeneration();
+</script>
+
+{% else %}
+
 {% if explanation_html %}
 {{ explanation_html|safe }}
 {% endif %}
@@ -96,4 +145,5 @@ setTimeout(function() {
 }, 500);
 </script>
 
+{% endif %}
 {% endblock %}

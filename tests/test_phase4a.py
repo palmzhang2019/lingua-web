@@ -40,8 +40,10 @@ class MockExp:
         self.example_sentences = ["例文1"]
 
 class MockTrans:
-    def __init__(self):
-        self.prompt_zh = "翻译题"
+    _counter = 0
+    def __init__(self, *args, **kwargs):
+        type(self)._counter += 1
+        self.prompt_zh = f"翻译题 {type(self)._counter}"
         self.reference_answer_ja = "答え"
         self.grading_notes = "使用目标语法"
         self.grammar_point = "〜てはいられない"
@@ -109,7 +111,7 @@ def mock_deepseek_basic():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=10)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = MockTrans
         mmc.return_value = MockMC()
         yield
 
@@ -123,7 +125,7 @@ def mock_deepseek_low_score():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=4, target_grammar_correct=False)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = MockTrans
         mmc.return_value = MockMC()
         yield
 
@@ -141,7 +143,7 @@ def mock_deepseek_edge_score():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.side_effect = se
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = MockTrans
         mmc.return_value = MockMC()
         yield
 
@@ -168,7 +170,7 @@ def mock_deepseek_with_errors():
             ]
         )
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = MockTrans
         mmc.return_value = MockMC()
         yield
 
@@ -182,7 +184,7 @@ def mock_deepseek_none():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = None
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = MockTrans
         mmc.return_value = MockMC()
         yield
 
@@ -255,6 +257,7 @@ def test_grading_persists_score_hearts(client, db, populated_material, mock_deep
     """Successful grading persists score_hearts=10."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -267,6 +270,7 @@ def test_8_hearts_is_passed(client, db, populated_material, mock_deepseek_basic)
     """score_hearts=10 (≥6) sets is_correct=True."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -279,6 +283,7 @@ def test_7_hearts_is_not_passed(client, db, populated_material, mock_deepseek_lo
     """score_hearts=4 (≤5, target grammar wrong) sets is_correct=False."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -294,6 +299,7 @@ def test_malformed_grading_creates_no_score(client, db, populated_material, mock
     db.commit()
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -317,6 +323,7 @@ def test_low_score_auto_creates_target_weak_point(client, db, populated_material
     """score_hearts=4 with target grammar wrong creates weak point for target grammar."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -332,6 +339,7 @@ def test_low_score_updates_existing_weak_point(client, db, populated_material, m
     from app.routes.study import _record_weak_point
     _record_weak_point(db, "〜てはいられない")
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -346,6 +354,7 @@ def test_high_score_does_not_create_target_weak_point(client, db, populated_mate
     db.commit()
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -358,6 +367,7 @@ def test_failed_target_grammar_not_in_candidates(client, db, populated_material,
     """Failed target grammar (score=4, ≤7) is NOT duplicated as a candidate."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -376,6 +386,7 @@ def test_additional_error_creates_pending_candidate(client, db, populated_materi
     """Additional error creates pending candidate only."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -396,6 +407,7 @@ def test_same_error_rule_key_merged_in_batch(client, db, populated_material, moc
     db.commit()
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -420,6 +432,7 @@ def test_adding_candidate_creates_weak_point(client, db, populated_material, moc
     """'Add to weak points' action on candidate creates weak point."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -445,6 +458,7 @@ def test_ignore_candidate_persists_status(client, db, populated_material, mock_d
     db.commit()
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -470,10 +484,14 @@ def test_review_gate_shown_when_candidates_exist(client, db, populated_material,
     """After Q10 translation with candidates, user sees review gate."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     # Answer all 10 translation questions (grammar_a: 1-5, grammar_b: 6-10)
-    for i in range(10):
-        resp = client.post("/study/answer", data={"answer": f"answer{i}"}, follow_redirects=False)
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"answer{i}"}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)  # GB
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"answer{i+5}"}, follow_redirects=False)
     # After Q10, should redirect to review candidates or to next question
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
@@ -489,9 +507,13 @@ def test_no_gate_when_no_candidates(client, db, populated_material, mock_deepsee
     """After Q10 with zero candidates, user proceeds to MC directly."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
-    for i in range(10):
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"answer{i}"}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"answer{i+5}"}, follow_redirects=False)
     from app.routes.study import _check_review_gate
     assert _check_review_gate(db, state.current_cycle_id) is False
 
@@ -499,9 +521,13 @@ def test_proceeds_after_all_candidates_resolved(client, db, populated_material, 
     """After all candidates added or ignored, user proceeds to MC."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
-    for i in range(10):
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"answer{i}"}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"answer{i+5}"}, follow_redirects=False)
     # Check gate active
     from app.routes.study import _check_review_gate
     assert _check_review_gate(db, state.current_cycle_id) is True
@@ -518,6 +544,7 @@ def test_review_gate_not_scored(client, db, populated_material, mock_deepseek_wi
     """Candidate review actions do not change question scores."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -542,6 +569,7 @@ def test_aggregate_score_not_displayed_during_learning(client, db, populated_mat
     """Aggregate score is not displayed in in-progress result page."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     # Answer one question, check progress page
     client.post("/study/answer", data={"answer": "test"}, follow_redirects=False)
     resp = client.get("/study/progress")
@@ -553,10 +581,14 @@ def test_final_score_calculated_after_completion(client, db, populated_material,
     """Final score computed after cycle completion includes translation heart % and MC 100/0."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     # Answer all 19 questions (mock returns score_hearts=10 for all translations, correct MC)
-    for i in range(10):
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"trans{i}"}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"trans{i+5}"}, follow_redirects=False)
     for i in range(9):
         client.post("/study/answer", data={"answer": "A"}, follow_redirects=False)
     # Cycle should be completed
@@ -574,10 +606,14 @@ def test_final_score_with_low_translation(client, db, populated_material, mock_d
     """Low heart translations contribute partial % to final score."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     # Answer all 19 questions (mock returns score_hearts=4 for translations, correct MC)
-    for i in range(10):
+    for i in range(5):
         client.post("/study/answer", data={"answer": f"trans{i}"}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"trans{i+5}"}, follow_redirects=False)
     for i in range(9):
         client.post("/study/answer", data={"answer": "A"}, follow_redirects=False)
     cycle = db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first()
@@ -657,6 +693,7 @@ def test_wrong_choice_still_creates_weak_point(client, db, populated_material, m
     """Wrong choice answers still auto-create weak points (MC unchanged)."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     all_qs = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id
@@ -682,6 +719,7 @@ def test_skip_semantics_unchanged(client, db, populated_material, mock_deepseek_
     """Skip semantics: unscored, no weak points, excluded."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     wp_before = db.query(WeakPoint).count()
     client.post("/study/skip_module", follow_redirects=False)
     state = db.query(SessionState).first()
@@ -698,6 +736,7 @@ def test_planned_never_scored(client, db, populated_material, mock_deepseek_basi
     """Planned questions remain unscored."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
     state = db.query(SessionState).first()
     planned = db.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id,

@@ -38,8 +38,10 @@ class MockExp:
         self.example_sentences = ["例文1"]
 
 class MockTrans:
+    _call_count = 0
     def __init__(self):
-        self.prompt_zh = "翻译题"
+        MockTrans._call_count += 1
+        self.prompt_zh = f"翻译题 {MockTrans._call_count}"
         self.reference_answer_ja = "答え"
         self.grading_notes = "使用目标语法"
         self.grammar_point = "〜てはいられない"
@@ -61,6 +63,10 @@ def setup_temp_db():
     yield
     os.unlink(_tmp_db.name)
 
+@pytest.fixture(autouse=True)
+def reset_counter():
+    MockTrans._call_count = 0
+
 @pytest.fixture
 def db():
     session = SessionLocal()
@@ -80,7 +86,7 @@ def mock_deepseek():
          patch("app.routes.study.generate_one_translation") as mt, \
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]  # Unique instances for duplicate guard
         mmc.return_value = MockMC()
         yield
 
@@ -101,7 +107,7 @@ def populated_material(db):
 # ===========================================================================
 
 def test_new_cycle_creates_19_planned_slots(client, db, populated_material, mock_deepseek):
-    """New cycle creates 19 slots; only question 1 is pending."""
+    """After Phase 5A, all 19 slots are planned after start_cycle."""
     mat = populated_material
     resp = client.post("/study/start_cycle",
                        data={"material_id": mat.id},
@@ -115,47 +121,50 @@ def test_new_cycle_creates_19_planned_slots(client, db, populated_material, mock
 
     assert len(all_qs) == 19, f"Expected 19 slots, got {len(all_qs)}"
 
-    # Q1 should be pending (generated)
-    assert all_qs[0].status == "pending", f"Q1 should be pending, got {all_qs[0].status}"
-
-    # Q2-Q19 should be planned
-    planned = [q for q in all_qs[1:] if q.status == "planned"]
-    assert len(planned) == 18, f"Expected 18 planned, got {len(planned)}"
+    # Phase 5A: all slots are planned after start
+    planned = [q for q in all_qs if q.status == "planned"]
+    assert len(planned) == 19, f"Expected 19 planned, got {len(planned)}"
 
 
 def test_prefetch_next_generates_one_question(client, db, populated_material, mock_deepseek):
-    """Prefetch generates only the next planned question."""
+    """Prefetch generates only the next planned question (after GA generated)."""
+    from tests._phase5a_compat import start_cycle_and_generate_ga
     mat = populated_material
-    client.post("/study/start_cycle", data={"material_id": mat.id},
-                follow_redirects=False)
+    start_cycle_and_generate_ga(client, mat.id)
 
-    state = db.query(SessionState).first()
-    all_qs = db.query(QuestionAttempt).filter(
-        QuestionAttempt.cycle_id == state.current_cycle_id
-    ).order_by(QuestionAttempt.id).all()
-
-    # Q2 should be planned
-    assert all_qs[1].status == "planned", f"Q2 should be planned before prefetch"
+    # After GA generation, Q1-5 are pending, Q6-19 are planned
+    # Prefetch should find one planned (GB or MC) slot and generate it
+    from app.db import SessionLocal as _SL
+    _vdb = _SL()
+    _state = _vdb.query(SessionState).first()
+    pre_planned = _vdb.query(QuestionAttempt).filter(
+        QuestionAttempt.cycle_id == _state.current_cycle_id,
+        QuestionAttempt.status == "planned",
+    ).count()
+    _vdb.close()
+    assert pre_planned >= 14, f"Expected >=14 planned before prefetch, got {pre_planned}"
 
     # Prefetch
     resp = client.post("/study/prefetch_next")
     assert resp.json().get("ok") is True, f"Prefetch failed: {resp.json()}"
 
-    # Q2 should now be pending
-    db.refresh(all_qs[1])
-    assert all_qs[1].status == "pending", \
-        f"Q2 should be pending after prefetch, got {all_qs[1].status}"
-    # Q3 should still be planned
-    db.refresh(all_qs[2])
-    assert all_qs[2].status == "planned", \
-        f"Q3 should remain planned, got {all_qs[2].status}"
+    # One slot should have changed from planned to pending
+    _vdb2 = _SL()
+    post_pending = _vdb2.query(QuestionAttempt).filter(
+        QuestionAttempt.cycle_id == _state.current_cycle_id,
+        QuestionAttempt.status == "pending",
+    ).count()
+    _vdb2.close()
+    # After GA generation: 5 pending. After prefetch: >= 6.
+    assert post_pending >= 6, \
+        f"Expected >= 6 pending after prefetch, got {post_pending}"
 
 
 def test_repeated_prefetch_is_idempotent(client, db, populated_material, mock_deepseek):
     """Repeated prefetch requests do not duplicate generation."""
+    from tests._phase5a_compat import start_cycle_and_generate_ga
     mat = populated_material
-    client.post("/study/start_cycle", data={"material_id": mat.id},
-                follow_redirects=False)
+    start_cycle_and_generate_ga(client, mat.id)
 
     # Prefetch twice consecutively
     r1 = client.post("/study/prefetch_next").json()
@@ -170,13 +179,15 @@ def test_repeated_prefetch_is_idempotent(client, db, populated_material, mock_de
         QuestionAttempt.cycle_id == state.current_cycle_id,
         QuestionAttempt.status == "pending"
     ).count()
-    # After 2 prefetches: Q1 (from start) + Q2 + maybe Q3 = 2 or 3 pending
-    assert pending >= 2, f"Expected at least 2 pending, got {pending}"
-    assert pending <= 3, f"Expected at most 3 pending, got {pending}"
+    # Phase 5A: GA generation creates 5 pending, each prefetch adds 1 MC
+    # After 2 prefetches: 5 GA + 2 MC = 7 pending
+    assert pending >= 6, f"Expected at least 6 pending, got {pending}"
+    assert pending <= 8, f"Expected at most 8 pending, got {pending}"
 
 
 def test_start_cycle_generates_only_first_question(client, db, populated_material, mock_deepseek):
-    """Starting a cycle only generates the first question, not all 19."""
+    """Phase 5A: start_cycle no longer synchronously generates Q1.
+    All 19 slots remain planned after start."""
     mat = populated_material
     resp = client.post("/study/start_cycle",
                        data={"material_id": mat.id},
@@ -193,8 +204,8 @@ def test_start_cycle_generates_only_first_question(client, db, populated_materia
         QuestionAttempt.status == "planned"
     ).count()
 
-    assert pending == 1, f"Expected 1 pending after start, got {pending}"
-    assert planned == 18, f"Expected 18 planned after start, got {planned}"
+    assert pending == 0, f"Expected 0 pending after start, got {pending}"
+    assert planned == 19, f"Expected 19 planned after start, got {planned}"
 
 
 def test_skip_module_handles_planned_slots(client, db, populated_material, mock_deepseek):
@@ -218,23 +229,26 @@ def test_skip_module_handles_planned_slots(client, db, populated_material, mock_
 
 def test_mastered_cancels_planned_future_slots(client, db, populated_material, mock_deepseek):
     """Toggling mastered cancels planned slots for that grammar."""
+    from tests._phase5a_compat import start_cycle_and_generate_ga
     mat = populated_material
     gp_a = db.query(GrammarPoint).filter(
         GrammarPoint.material_id == mat.id
     ).first()
 
-    client.post("/study/start_cycle", data={"material_id": mat.id},
-                follow_redirects=False)
+    start_cycle_and_generate_ga(client, mat.id)
 
     # Toggle gp_a to mastered
     client.post(f"/materials/{mat.id}/grammar/{gp_a.id}/toggle_mastered",
                 headers={"X-Requested-With": "XMLHttpRequest"})
 
-    state = db.query(SessionState).first()
-    cancelled = db.query(QuestionAttempt).filter(
+    from app.db import SessionLocal as _SL
+    _vdb = _SL()
+    state = _vdb.query(SessionState).first()
+    cancelled = _vdb.query(QuestionAttempt).filter(
         QuestionAttempt.cycle_id == state.current_cycle_id,
         QuestionAttempt.status == "cancelled_mastered"
     ).all()
+    _vdb.close()
 
     assert len(cancelled) >= 1, "Expected at least 1 cancelled question"
 

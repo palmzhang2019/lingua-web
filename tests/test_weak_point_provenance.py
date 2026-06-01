@@ -51,8 +51,10 @@ class MockExp:
         self.example_sentences = ["例文1"]
 
 class MockTrans:
+    _call_count = 0
     def __init__(self):
-        self.prompt_zh = "翻译题"
+        MockTrans._call_count += 1
+        self.prompt_zh = f"翻译题 {MockTrans._call_count}"
         self.reference_answer_ja = "答え"
         self.grading_notes = "使用目标语法"
         self.grammar_point = "〜てはいられない"
@@ -109,6 +111,11 @@ def db():
 def client():
     return TestClient(app)
 
+@pytest.fixture(autouse=True)
+def reset_counter():
+    MockTrans._call_count = 0
+    yield
+
 @pytest.fixture
 def mock_basic():
     """score_hearts=10, no errors (pass)"""
@@ -118,7 +125,7 @@ def mock_basic():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=10)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -131,7 +138,7 @@ def mock_low_score():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(score_hearts=4, target_grammar_correct=False)
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -151,7 +158,7 @@ def mock_low_with_errors():
             ]
         )
         me.return_value = MockExp()
-        mt.return_value = MockTrans()
+        mt.side_effect = [MockTrans() for _ in range(20)]
         mmc.return_value = MockMC()
         yield
 
@@ -297,11 +304,9 @@ def test_all_three_source_types_integration(client, db, populated_material, mock
     # Start cycle (grammar_a = 〜てはいられない)
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # GA
     state = db.query(SessionState).first()
     cycle_id = state.current_cycle_id
-    all_qs = db.query(QuestionAttempt).filter(
-        QuestionAttempt.cycle_id == cycle_id
-    ).order_by(QuestionAttempt.id).all()
 
     # Q1 translation: score_hearts=5 (tgc=false) with additional errors
     # This creates source 1 (auto target grammar) and source 2 (pending candidate)
@@ -323,8 +328,11 @@ def test_all_three_source_types_integration(client, db, populated_material, mock
     ).all()
     assert len(candidates) > 0, "Expected pending candidates from additional errors"
 
-    # Answer remaining 9 translations to reach review gate
-    for i in range(9):
+    # Answer remaining 4 GA translations, then generate GB and answer 5 more
+    for i in range(4):
+        client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
+    client.post("/study/generate_module")  # GB
+    for i in range(4, 9):
         client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
 
     # Confirm candidate and add it (source 2)
@@ -353,11 +361,16 @@ def test_choice_wrong_answer_integration(client, db, populated_material_suffix, 
     # Start cycle
     client.post("/study/start_cycle", data={"material_id": populated_material_suffix.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # GA
     state = db.query(SessionState).first()
     cycle_id = state.current_cycle_id
-    
-    # Answer all 10 translations with mock_low_score (they'll produce events)
-    for i in range(10):
+
+    # Answer 5 GA translations with mock_low_score
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
+    client.post("/study/generate_module")  # GB
+    # Answer 5 GB translations with mock_low_score
+    for i in range(5, 10):
         client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
     
     # Now MC: we mock wrong answer by using a mock that returns grammar_point
@@ -385,15 +398,19 @@ def test_cycle_summary_new_and_re_hit_counts(client, db, populated_material, moc
     # Start cycle
     client.post("/study/start_cycle", data={"material_id": populated_material.id},
                 follow_redirects=False)
+    client.post("/study/generate_module")  # GA
     state = db.query(SessionState).first()
     cycle_id = state.current_cycle_id
 
     # Answer Q1 (low score) -> creates "〜てはいられない" weak point (created)
     client.post("/study/answer", data={"answer": "bad"}, follow_redirects=False)
 
-    # For remaining: still low score -> hit_existing
-    for i in range(9):
+    # For remaining GA: still low score -> hit_existing
+    for i in range(4):
         client.post("/study/answer", data={"answer": f"t{i}"}, follow_redirects=False)
+    client.post("/study/generate_module")  # GB
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"t{i+5}"}, follow_redirects=False)
 
     # Also: MC wrong answers produce choice_wrong_answer events
     for i in range(9):
