@@ -201,6 +201,10 @@ def populated_material(db):
     db.query(QuestionAttempt).delete()
     db.query(StudyCycle).delete()
     db.query(SessionState).delete()
+    # Also clear grammar/material so a leaked mastered grammar from a prior
+    # test file cannot pollute this cycle's eligible/contamination scope.
+    db.query(GrammarPoint).delete()
+    db.query(Material).delete()
     db.commit()
 
     mat = Material(filename="test.txt", content_text="Test.", source_type="txt")

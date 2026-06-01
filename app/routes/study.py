@@ -45,6 +45,15 @@ MODULE_LABELS = {
     "multiple_choice": "选择题练习",
 }
 
+# A question slot is only left in `generating` across requests when a prior
+# generation request was abandoned mid-flight: the atomic claim commits the
+# `generating` status (with generation_started_at) *before* the synchronous
+# generation runs, so any completed request leaves pending/generation_failed.
+# A `generating` slot older than this threshold is therefore treated as stale
+# and recovered to a retryable state; a slot claimed more recently is assumed
+# to be a concurrent in-flight request and is not reset prematurely.
+_STALE_GENERATING_SECONDS = 60
+
 
 def _get_or_create_session_state(db: Session) -> SessionState:
     """Get the singleton session state, creating it if needed."""
@@ -441,13 +450,42 @@ def _generate_slot_content(
             db.commit()
             return False
 
-        mc_name = _normalize_grammar_name(mc_result.grammar_point)
-        mnames_clean = {_normalize_grammar_name(n) for n in globally_mastered_names}
-        texts = [mc_result.prompt, mc_result.A, mc_result.B, mc_result.C, mc_result.D]
-        contaminated = any(
-            mname in " ".join(texts).lower()
-            for mname in mnames_clean if mname
-            for t2 in [texts]
+        # Contamination guard (role-aware): reject only when the actual learning
+        # TARGET grammar is itself mastered. Earlier versions raw-substring
+        # scanned the full prompt + all choices against every globally-mastered
+        # name. Japanese grammar expressions are short (often 2-3 chars, e.g.
+        # particles/conjunctions) and routinely appear as substrings inside
+        # almost any sentence — and even inside the legitimately-targeted,
+        # unmastered grammar's own name — so that scan permanently false-failed
+        # and blocked all MC generation for the cycle. The product rule is that
+        # a mastered grammar must not be SELECTED as the learning target;
+        # incidental textual presence of an unrelated mastered grammar must not
+        # block an otherwise valid question.
+        #
+        # We check the MC's declared grammar_point AND the server-side intended
+        # target for this slot (derived from slot_idx, mirroring the generator's
+        # role mapping). The server-side target is authoritative and cannot be
+        # spoofed by LLM free-text; checking it also closes the bypass where a
+        # missing/empty declared grammar_point would otherwise skip the guard.
+        # review_points already exclude mastered grammars, so review slots are
+        # only ever rejected when the model itself declares a mastered target.
+        if slot_idx < 2:
+            intended_target = grammar_a
+        elif slot_idx < 4:
+            intended_target = grammar_b
+        elif review_points:
+            intended_target = review_points[(slot_idx - 4) % len(review_points)]
+        else:
+            intended_target = grammar_a
+        mnames_clean = {_normalize_grammar_name(n) for n in globally_mastered_names if n}
+        declared_name = _normalize_grammar_name(mc_result.grammar_point)
+        intended_name = (
+            _normalize_grammar_name(intended_target.point_name)
+            if intended_target else ""
+        )
+        contaminated = (
+            (bool(declared_name) and declared_name in mnames_clean)
+            or (bool(intended_name) and intended_name in mnames_clean)
         )
         if contaminated:
             slot.status = "generation_failed"
@@ -1839,7 +1877,22 @@ def _ensure_next_question_generated(
         return _generate_slot_content(db, next_q, ga, gb, review_points, globally_mastered_names)
 
     if next_q.status == "generating":
-        # Brief wait for prefetch to complete
+        # Recover a stale (abandoned) generating slot to a retryable state, but
+        # never prematurely reset a slot claimed moments ago by a concurrent
+        # in-flight request. Staleness is judged by generation_started_at, the
+        # same convention the atomic claim already records.
+        started = next_q.generation_started_at
+        age_seconds = (
+            (datetime.datetime.utcnow() - started).total_seconds()
+            if started is not None else None
+        )
+        if age_seconds is None or age_seconds >= _STALE_GENERATING_SECONDS:
+            next_q.status = "generation_failed"
+            next_q.generation_error = "Generation timed out"
+            db.commit()
+            return False
+        # Recently claimed — give the concurrent request a brief moment to land,
+        # but leave it `generating` (do not force-fail) if it has not yet.
         import time
         for _ in range(10):
             time.sleep(0.1)
@@ -1848,9 +1901,6 @@ def _ensure_next_question_generated(
                 return True
             if next_q.status != "generating":
                 break
-        next_q.status = "generation_failed"
-        next_q.generation_error = "Generation timed out"
-        db.commit()
         return False
 
     return False

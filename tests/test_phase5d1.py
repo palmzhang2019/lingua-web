@@ -1108,10 +1108,21 @@ def test_replacement_after_partial_mc_skips_preserved_answered_for_unanswered(
         t.grading_notes = f"使用目标语法 {t.grammar_point}"
         return t
 
+    # After replacement, grammar A becomes the unmastered replacement 〜たきり.
+    # The regenerated GA-distinction MC must therefore target an UNMASTERED
+    # grammar; the default MockMC (grammar_point="〜てはいられない") is unrealistic
+    # once that grammar is mastered and would be correctly rejected by the
+    # role-aware contamination guard. Use a realistic target here.
+    realistic_mc = MockMC()
+    realistic_mc.grammar_point = "〜たきり"
+    realistic_mc.question_role = "grammar_a_distinction"
+
     with patch("app.routes.study.generate_one_translation") as mt, \
          patch("app.routes.study.generate_explanation") as me, \
+         patch("app.routes.study.generate_one_multiple_choice") as mmc, \
          patch("app.routes.study.evaluate_translation_answer_v2") as mev2:
         me.return_value = MockExp()
+        mmc.return_value = realistic_mc
         mev2.return_value = MockEvalV2(score_hearts=10)
         mt.side_effect = _gen_trans
 
