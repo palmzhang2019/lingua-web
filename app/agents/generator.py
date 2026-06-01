@@ -225,6 +225,108 @@ def generate_multiple_choice(
     return result.questions[:9]
 
 
+def generate_one_translation(
+    grammar_point: GrammarPoint,
+) -> TranslationExercise | None:
+    """Generate exactly 1 translation exercise for a grammar point."""
+    result = generate_translation_exercises(grammar_point, count=1)
+    return result[0] if result else None
+
+
+def generate_one_multiple_choice(
+    grammar_a: GrammarPoint,
+    grammar_b: GrammarPoint,
+    review_points: list[GrammarPoint],
+    slot_index: int,  # 0-based within MC module (0-8)
+) -> MultipleChoiceQuestion | None:
+    """Generate exactly 1 multiple-choice question for a specific slot.
+
+    slot_index mapping (must match start_cycle):
+      0-1 → grammar_a_distinction
+      2-3 → grammar_b_distinction
+      4-8 → review
+    """
+    if not is_available():
+        print("[generator] LLM not available — skipping single MC generation")
+        return None
+
+    if slot_index < 2:
+        role = "grammar_a_distinction"
+        target = grammar_a
+        from app.schemas import MultipleChoiceQuestion as MCQSchema
+    elif slot_index < 4:
+        role = "grammar_b_distinction"
+        target = grammar_b
+    else:
+        role = "review"
+        # Pick review point round-robin
+        if review_points:
+            idx = (slot_index - 4) % len(review_points)
+            target = review_points[idx]
+        else:
+            target = grammar_a  # fallback
+
+    from pydantic import BaseModel, Field
+
+    class SingleMC(BaseModel):
+        prompt: str = Field(description="Japanese sentence with blank")
+        A: str = Field(description="Option A")
+        B: str = Field(description="Option B")
+        C: str = Field(description="Option C")
+        D: str = Field(description="Option D")
+        expected: str = Field(description="Correct answer letter (A/B/C/D)")
+        grammar_point: str = Field(default="", description="Target grammar")
+
+    context = (
+        f"[Grammar A] {grammar_a.point_name} ({grammar_a.difficulty_level}): {grammar_a.explanation_jp}\n"
+        f"[Grammar B] {grammar_b.point_name} ({grammar_b.difficulty_level}): {grammar_b.explanation_jp}\n"
+    )
+    if target and target.id not in (grammar_a.id, grammar_b.id):
+        context += (
+            f"[Target Review] {target.point_name} ({target.difficulty_level}): "
+            f"{target.explanation_jp}\n"
+        )
+
+    user_prompt = (
+        f"Create 1 multiple-choice question for Japanese grammar learning.\n\n"
+        f"{context}\n"
+        f"Role: {role}\n"
+        f"Target grammar: {target.point_name if target else 'general'}\n\n"
+        "Return JSON: {\"prompt\": \"...\", \"A\": \"...\", \"B\": \"...\", "
+        "\"C\": \"...\", \"D\": \"...\", \"expected\": \"A\", \"grammar_point\": \"...\"}\n"
+        "Expected is A/B/C/D. The grammar_point field should name the target grammar."
+    )
+
+    result = structured_extraction(
+        _single_mc_system_prompt(), user_prompt, SingleMC
+    )
+    if result is None:
+        print(f"[generator] Single MC generation failed (slot {slot_index})")
+        return None
+
+    from app.schemas import MultipleChoiceQuestion as MCQ
+
+    return MCQ(
+        prompt=result.prompt,
+        A=result.A, B=result.B, C=result.C, D=result.D,
+        expected=result.expected,
+        grammar_point=result.grammar_point or (target.point_name if target else ""),
+        question_role=role,
+    )
+
+
+def _single_mc_system_prompt() -> str:
+    """System prompt for single MC generation."""
+    return (
+        "You are a Japanese language test designer. "
+        "Create exactly ONE multiple-choice question."
+        "Each question must have a prompt (Japanese with a blank), "
+        "four options A/B/C/D, one expected answer letter, "
+        "and the target grammar_point name. "
+        "Distractors must be plausible. Return valid JSON only."
+    )
+
+
 # =============================================================================
 # Translation evaluation
 # =============================================================================

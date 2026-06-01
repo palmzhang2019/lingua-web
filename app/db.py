@@ -37,6 +37,9 @@ def init_db() -> None:
     _add_column_if_missing("grammar_points", "mastered", "BOOLEAN")
     _add_column_if_missing("vocab_items", "mastered", "BOOLEAN")
     _add_column_if_missing("materials", "archived_at", "DATETIME")
+    _add_column_if_missing("question_attempts", "target_grammar_id", "INTEGER")
+    _add_column_if_missing("question_attempts", "generation_error", "TEXT")
+    _add_column_if_missing("question_attempts", "generation_started_at", "DATETIME")
 
 
 def _add_column_if_missing(table: str, column: str, coltype: str):

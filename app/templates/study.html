@@ -89,4 +89,11 @@
     {% endif %}
 </div>
 
+<script>
+// Prefetch next question after page render (non-blocking)
+setTimeout(function() {
+    fetch('/study/prefetch_next', { method: 'POST' }).catch(function(){});
+}, 500);
+</script>
+
 {% endblock %}

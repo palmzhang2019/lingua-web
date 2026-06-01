@@ -24,6 +24,8 @@ from app.agents.generator import (
     generate_explanation,
     generate_translation_exercises,
     generate_multiple_choice,
+    generate_one_translation,
+    generate_one_multiple_choice,
     evaluate_translation_answer,
 )
 from app.llm import get_and_clear_usage, is_available
@@ -80,16 +82,16 @@ def _find_next_module(
         start = MODULE_ORDER.index(current_module) + 1
     for mod in MODULE_ORDER[start:]:
         module_qs = _get_module_questions(all_qs, mod)
-        pending = [q for q in module_qs if q.status == "pending"]
+        pending = [q for q in module_qs if q.status in ("pending", "planned", "generation_failed")]
         if pending:
             return mod
     return None
 
 
 def _first_pending_question_index(all_qs: list[QuestionAttempt]) -> int | None:
-    """Return the index (in all_qs) of the first pending question."""
+    """Return the index (in all_qs) of the first pending/planned question."""
     for i, q in enumerate(all_qs):
-        if q.status == "pending":
+        if q.status in ("pending", "planned", "generation_failed"):
             return i
     return None
 
@@ -102,7 +104,7 @@ def _compute_cycle_completion(db: Session, cycle: StudyCycle) -> dict:
     skipped_count = sum(1 for q in all_qs if q.status == "skipped")
     studied_count = sum(1 for q in all_qs if q.status == "studied")
     cancelled_mastered_count = sum(1 for q in all_qs if q.status == "cancelled_mastered")
-    pending = sum(1 for q in all_qs if q.status == "pending")
+    pending = sum(1 for q in all_qs if q.status in ("pending", "planned", "generating", "generation_failed"))
     correct = sum(1 for q in all_qs if q.is_correct)
 
     # Module-level analysis
@@ -110,7 +112,7 @@ def _compute_cycle_completion(db: Session, cycle: StudyCycle) -> dict:
     had_skipped = False
     for mod in MODULE_ORDER:
         mod_qs = _get_module_questions(all_qs, mod)
-        mod_pending = sum(1 for q in mod_qs if q.status == "pending")
+        mod_pending = sum(1 for q in mod_qs if q.status in ("pending", "planned", "generating", "generation_failed"))
         mod_skipped = sum(1 for q in mod_qs if q.status == "skipped")
         if mod_skipped > 0:
             had_skipped = True
@@ -213,7 +215,7 @@ def _cancel_mastered_cycle_questions(
     changed = False
 
     for i, q in enumerate(all_qs):
-        if q.status != "pending":
+        if q.status not in ("pending", "planned", "generating", "generation_failed"):
             continue
         payload = q.question_payload_json or {}
         q_gp_name = (payload.get("grammar_point") or "").lower().strip().lstrip("〜")
@@ -337,6 +339,119 @@ def _build_combined_grammar_pool(
         eligible.append(gp)
 
     return eligible, globally_mastered_names
+
+
+def _generate_slot_content(
+    db: Session,
+    slot: QuestionAttempt,
+    grammar_a: GrammarPoint,
+    grammar_b: GrammarPoint,
+    review_points: list[GrammarPoint],
+    globally_mastered_names: set[str],
+) -> bool:
+    """Generate content for one planned/generation_failed slot.
+
+    Returns True on success (slot status → pending).
+    Sets generation_failed + error message on failure.
+    """
+    payload = slot.question_payload_json or {}
+    gtype = payload.get("type", "translation")
+    module = slot.module_type
+
+    if module in ("grammar_a_translation", "grammar_b_translation"):
+        target_gp_id = slot.target_grammar_id or (grammar_a.id if "grammar_a" in module else grammar_b.id)
+        target_gp = (grammar_a if target_gp_id == grammar_a.id
+                     else grammar_b if target_gp_id == grammar_b.id
+                     else db.query(GrammarPoint).filter(GrammarPoint.id == target_gp_id).first())
+        if not target_gp:
+            slot.status = "generation_failed"
+            slot.generation_error = "Target grammar not found"
+            db.commit()
+            return False
+
+        result = generate_one_translation(target_gp)
+        if result is None:
+            slot.status = "generation_failed"
+            slot.generation_error = "Failed to generate translation question"
+            db.commit()
+            return False
+
+        qp = QuestionPayload(
+            type="translation",
+            prompt_zh=result.prompt_zh,
+            reference_answer_ja=result.reference_answer_ja,
+            grading_notes=result.grading_notes,
+            grammar_point=result.grammar_point,
+        ).model_dump()
+        slot.question_payload_json = qp
+        slot.correct_answer = result.reference_answer_ja
+        slot.status = "pending"
+        db.commit()
+
+    else:  # multiple_choice
+        # Determine slot index within MC module
+        all_qs = _get_sorted_cycle_questions(db, slot.cycle_id)
+        mc_qs = [q for q in all_qs if q.module_type == "multiple_choice"]
+        slot_idx = next((i for i, q in enumerate(mc_qs) if q.id == slot.id), 0)
+
+        result = generate_one_multiple_choice(
+            grammar_a, grammar_b, review_points, slot_idx
+        )
+        if result is None:
+            slot.status = "generation_failed"
+            slot.generation_error = "Failed to generate multiple-choice question"
+            db.commit()
+            return False
+
+        mc_name = _normalize_grammar_name(result.grammar_point)
+        mnames_clean = {_normalize_grammar_name(n) for n in globally_mastered_names}
+        texts = [result.prompt, result.A, result.B, result.C, result.D]
+        contaminated = any(
+            mname in " ".join(texts).lower()
+            for mname in mnames_clean if mname
+            for texts in [texts]
+        )
+        if contaminated:
+            slot.status = "generation_failed"
+            slot.generation_error = "Generated content contains mastered grammar"
+            db.commit()
+            return False
+
+        qp = QuestionPayload(
+            type="multiple_choice",
+            choices={"A": result.A, "B": result.B, "C": result.C, "D": result.D},
+            prompt=result.prompt,
+            expected=result.expected,
+            grammar_point=result.grammar_point,
+            question_role=result.question_role,
+        ).model_dump()
+        slot.question_payload_json = qp
+        slot.correct_answer = result.expected
+        slot.status = "pending"
+        db.commit()
+
+    return True
+
+
+def _get_cycle_grammar_points(
+    db: Session, cycle: StudyCycle
+) -> tuple[GrammarPoint | None, GrammarPoint | None, list[GrammarPoint]]:
+    """Get grammar_a, grammar_b, and eligible review points for a cycle."""
+    ga = db.query(GrammarPoint).filter(GrammarPoint.id == cycle.grammar_a_id).first()
+    gb = db.query(GrammarPoint).filter(GrammarPoint.id == cycle.grammar_b_id).first()
+
+    # Build review list from the cycle's materials
+    cms = db.query(CycleMaterial).filter(
+        CycleMaterial.cycle_id == cycle.id
+    ).all()
+    material_ids = [cm.material_id for cm in cms]
+    eligible_candidates, _ = _build_combined_grammar_pool(db, material_ids)
+    review_points = [
+        gp for gp in eligible_candidates
+        if gp.id not in (cycle.grammar_a_id, cycle.grammar_b_id)
+    ]
+
+    return ga, gb, review_points
 
 
 def _build_answer_feedback_html(
@@ -472,112 +587,7 @@ async def start_cycle(
     other_review = [gp for gp in review_points if gp.point_name not in weak_point_names]
     prioritized_review = weak_review + other_review
 
-    # ---- Parallel generation: 5 independent DeepSeek calls ------------------
-    import asyncio
-    from concurrent.futures import ThreadPoolExecutor
-
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        expl_a_future = loop.run_in_executor(
-            executor, generate_explanation, grammar_a
-        )
-        expl_b_future = loop.run_in_executor(
-            executor, generate_explanation, grammar_b
-        )
-        trans_a_future = loop.run_in_executor(
-            executor, generate_translation_exercises, grammar_a, 5
-        )
-        trans_b_future = loop.run_in_executor(
-            executor, generate_translation_exercises, grammar_b, 5
-        )
-        mc_future = loop.run_in_executor(
-            executor, generate_multiple_choice,
-            grammar_a, grammar_b, prioritized_review,
-        )
-
-        (explanation_a, explanation_b,
-         trans_a, trans_b, mc_questions) = await asyncio.gather(
-            expl_a_future, expl_b_future,
-            trans_a_future, trans_b_future,
-            mc_future,
-        )
-
-    # ---- Validate results ---------------------------------------------------
-    if not explanation_a or not explanation_b:
-        return templates.TemplateResponse(
-            request, "base.html",
-            {
-                "content": (
-                    "<div class='card flash-error'>"
-                    "<strong>生成语法解释失败：</strong>DeepSeek 无法生成语法解释。"
-                    "请检查 API 配置后重试。</div>"
-                    "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
-                )
-            },
-            status_code=500,
-        )
-
-    if len(trans_a) < 5 or len(trans_b) < 5:
-        return templates.TemplateResponse(
-            request, "base.html",
-            {
-                "content": (
-                    "<div class='card flash-error'>"
-                    "<strong>生成翻译题失败：</strong>DeepSeek 无法生成完整的翻译练习题。"
-                    f"语法A生成了 {len(trans_a)} 题，语法B生成了 {len(trans_b)} 题。</div>"
-                    "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
-                )
-            },
-            status_code=500,
-        )
-
-    if len(mc_questions) < 9:
-        return templates.TemplateResponse(
-            request, "base.html",
-            {
-                "content": (
-                    "<div class='card flash-error'>"
-                    "<strong>生成选择题失败：</strong>DeepSeek 无法生成完整的选择题。"
-                    f"只生成了 {len(mc_questions)} 题。</div>"
-                    "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
-                )
-            },
-            status_code=500,
-        )
-
-    # ---- Post-generation: validate MC against globally mastered grammar ------
-    mc_valid = _validate_mc_against_mastered(mc_questions, globally_mastered_names)
-    if not all(mc_valid):
-        constrained_prompt_extras = (
-            "\n\nCRITICAL RULE: The following grammar expressions must NOT appear "
-            "in ANY question prompt, choice, or distractor:\n"
-        ) + "\n".join(f"- {name}" for name in sorted(globally_mastered_names))
-        from app.agents.generator import (
-            generate_multiple_choice as retry_generate_mc,
-        )
-        retry_mc = retry_generate_mc(
-            grammar_a, grammar_b, prioritized_review,
-        )
-        if retry_mc and len(retry_mc) >= 9:
-            mc_questions = retry_mc
-            mc_valid = _validate_mc_against_mastered(retry_mc, globally_mastered_names)
-
-        if not all(mc_valid):
-            return templates.TemplateResponse(
-                request, "base.html",
-                {
-                    "content": (
-                        "<div class='card flash-error'>"
-                        "<strong>生成选择题包含已掌握的语法内容：</strong>"
-                        "系统检测到生成的选择题中包含了用户已标记为已掌握的语法表达式，"
-                        "重试后仍无法避免。请检查已掌握标记后重试。</div>"
-                        "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
-                    )
-                },
-                status_code=500,
-            )
-
-    # ---- Create study cycle -------------------------------------------------
+    # ---- Create study cycle with 19 planned slots (lazy generation) --------
     cycle = StudyCycle(
         started_at=datetime.datetime.utcnow(),
         completed_at=None,
@@ -594,77 +604,88 @@ async def start_cycle(
         db.add(CycleMaterial(cycle_id=cycle.id, material_id=mid))
     db.commit()
 
-    # ---- Persist 19 question attempts with status="pending" -----------------
-    # Questions 1-5: Grammar A translation
-    for ex in trans_a:
-        payload = QuestionPayload(
-            type="translation",
-            prompt_zh=ex.prompt_zh,
-            reference_answer_ja=ex.reference_answer_ja,
-            grading_notes=ex.grading_notes,
-            grammar_point=ex.grammar_point,
-        ).model_dump()
-        qa = QuestionAttempt(
+    # ---- Create 19 planned question slots (lazy generation) -----------------
+    # Slots 1-5: Grammar A translation
+    for i in range(5):
+        slot = QuestionAttempt(
             cycle_id=cycle.id,
             module_type="grammar_a_translation",
-            question_payload_json=payload,
-            user_answer=None,
-            correct_answer=ex.reference_answer_ja,
+            question_payload_json={"type": "translation"},
+            correct_answer="",
             is_correct=False,
-            answered_at=None,
-            status="pending",
+            status="planned",
+            target_grammar_id=grammar_a.id,
         )
-        db.add(qa)
+        db.add(slot)
 
-    # Questions 6-10: Grammar B translation
-    for ex in trans_b:
-        payload = QuestionPayload(
-            type="translation",
-            prompt_zh=ex.prompt_zh,
-            reference_answer_ja=ex.reference_answer_ja,
-            grading_notes=ex.grading_notes,
-            grammar_point=ex.grammar_point,
-        ).model_dump()
-        qa = QuestionAttempt(
+    # Slots 6-10: Grammar B translation
+    for i in range(5):
+        slot = QuestionAttempt(
             cycle_id=cycle.id,
             module_type="grammar_b_translation",
-            question_payload_json=payload,
-            user_answer=None,
-            correct_answer=ex.reference_answer_ja,
+            question_payload_json={"type": "translation"},
+            correct_answer="",
             is_correct=False,
-            answered_at=None,
-            status="pending",
+            status="planned",
+            target_grammar_id=grammar_b.id,
         )
-        db.add(qa)
+        db.add(slot)
 
-    # Questions 11-19: Multiple choice
-    for mc in mc_questions:
-        payload = QuestionPayload(
-            type="multiple_choice",
-            choices={"A": mc.A, "B": mc.B, "C": mc.C, "D": mc.D},
-            prompt=mc.prompt,
-            expected=mc.expected,
-            grammar_point=mc.grammar_point,
-            question_role=mc.question_role,
-        ).model_dump()
-        qa = QuestionAttempt(
+    # Slots 11-19: Multiple choice
+    for i in range(9):
+        slot = QuestionAttempt(
             cycle_id=cycle.id,
             module_type="multiple_choice",
-            question_payload_json=payload,
-            user_answer=None,
-            correct_answer=mc.expected,
+            question_payload_json={"type": "multiple_choice"},
+            correct_answer="",
             is_correct=False,
-            answered_at=None,
-            status="pending",
+            status="planned",
         )
-        db.add(qa)
-
+        db.add(slot)
     db.commit()
 
-    # ---------- Persist usage logs for generation phase ----------
-    _persist_usage_logs(db, cycle.id)
+    # ---- Generate only question 1 synchronously -----------------------------
+    db.refresh(cycle)
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
+    q1 = all_qs[0] if all_qs else None
 
-    # ---------- Initialize session state ----------
+    if q1:
+        # Update the slot's question_payload_json to set type
+        q1.question_payload_json = {"type": "translation"}
+        success = _generate_slot_content(
+            db, q1, grammar_a, grammar_b, prioritized_review, globally_mastered_names
+        )
+        if not success:
+            # Clean up: remove failed cycle
+            db.query(QuestionAttempt).filter(
+                QuestionAttempt.cycle_id == cycle.id
+            ).delete()
+            db.query(CycleMaterial).filter(
+                CycleMaterial.cycle_id == cycle.id
+            ).delete()
+            db.delete(cycle)
+            # Clear session state if it was pointing to this cycle
+            state = _get_or_create_session_state(db)
+            if state.current_cycle_id == cycle.id:
+                state.current_cycle_id = None
+                state.current_module = None
+                state.current_question_index = 0
+            db.commit()
+
+            return templates.TemplateResponse(
+                request, "base.html",
+                {
+                    "content": (
+                        "<div class='card flash-error'>"
+                        "<strong>生成首题失败：</strong>无法生成学习内容，请重试。"
+                        "</div>"
+                        "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
+                    )
+                },
+                status_code=500,
+            )
+
+    # ---- Initialize session state -------------------------------------------
     state = _get_or_create_session_state(db)
     state.current_cycle_id = cycle.id
     state.current_module = "grammar_a_translation"
@@ -1029,6 +1050,13 @@ async def submit_answer(
 
     db.commit()
 
+    # ---- Phase 3: Ensure next question is available before returning --------
+    cycle = db.query(StudyCycle).filter(
+        StudyCycle.id == state.current_cycle_id
+    ).first()
+    if cycle:
+        _ensure_next_question_generated(db, state, cycle)
+
     # Check if finished
     remaining_pending = _first_pending_question_index(all_qs)
     if remaining_pending is None:
@@ -1062,17 +1090,15 @@ async def skip_current_module(
 
     all_qs = _get_sorted_cycle_questions(db, state.current_cycle_id)
     mod_qs = _get_module_questions(all_qs, state.current_module)
-    pending_in_mod = [q for q in mod_qs if q.status == "pending"]
+    unresolved_in_mod = [q for q in mod_qs if q.status in ("pending", "planned", "generating", "generation_failed")]
 
-    if not pending_in_mod:
+    if not unresolved_in_mod:
         return RedirectResponse(url="/study/current", status_code=303)
 
-    # Mark all pending questions in this module as skipped
-    for q in pending_in_mod:
+    # Mark all unresolved questions in this module as skipped
+    for q in unresolved_in_mod:
         q.status = "skipped"
         q.answered_at = datetime.datetime.utcnow()
-        # Do NOT set user_answer or is_correct — unanswered skipped questions
-        # must not create weak points
     db.commit()
 
     # Advance to next module with pending questions
@@ -1113,13 +1139,13 @@ async def mark_current_module_studied(
 
     all_qs = _get_sorted_cycle_questions(db, state.current_cycle_id)
     mod_qs = _get_module_questions(all_qs, state.current_module)
-    pending_in_mod = [q for q in mod_qs if q.status == "pending"]
+    unresolved_in_mod = [q for q in mod_qs if q.status in ("pending", "planned", "generating", "generation_failed")]
 
-    if not pending_in_mod:
+    if not unresolved_in_mod:
         return RedirectResponse(url="/study/current", status_code=303)
 
-    # Mark all pending questions in this module as studied
-    for q in pending_in_mod:
+    # Mark all unresolved questions in this module as studied
+    for q in unresolved_in_mod:
         q.status = "studied"
         q.answered_at = datetime.datetime.utcnow()
         # Do NOT set user_answer or is_correct — studied unanswered questions
@@ -1145,6 +1171,98 @@ async def mark_current_module_studied(
     db.commit()
 
     return RedirectResponse(url="/study/current", status_code=303)
+
+
+# =============================================================================
+# POST /study/prefetch_next — generate the next needed question (idempotent)
+# =============================================================================
+
+@router.post("/prefetch_next")
+async def prefetch_next(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Generate at most one next planned question for the current cycle."""
+    state = _get_or_create_session_state(db)
+    if not state.current_cycle_id:
+        return {"ok": False, "reason": "no_active_cycle"}
+
+    cycle = db.query(StudyCycle).filter(
+        StudyCycle.id == state.current_cycle_id
+    ).first()
+    if not cycle or cycle.completed_at:
+        return {"ok": False, "reason": "cycle_completed"}
+
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
+    # Find the first PLANNED question (skip already-pending ones)
+    planned_idx = None
+    for i, q in enumerate(all_qs):
+        if q.status == "planned":
+            planned_idx = i
+            break
+    if planned_idx is None:
+        return {"ok": False, "reason": "no_planned"}
+
+    next_q = all_qs[planned_idx]
+    if next_q.status != "planned":
+        return {"ok": False, "reason": f"not_planned_{next_q.status}"}
+
+    # Atomic claim: planned → generating
+    rows = db.query(QuestionAttempt).filter(
+        QuestionAttempt.id == next_q.id,
+        QuestionAttempt.status == "planned",
+    ).update({"status": "generating", "generation_started_at": datetime.datetime.utcnow()})
+    if rows == 0:
+        return {"ok": False, "reason": "claim_failed"}
+    db.commit()
+
+    ga, gb, review_points = _get_cycle_grammar_points(db, cycle)
+    material_ids = [cm.material_id for cm in db.query(CycleMaterial).filter(
+        CycleMaterial.cycle_id == cycle.id).all()]
+    _, globally_mastered_names = _build_combined_grammar_pool(db, material_ids)
+
+    success = _generate_slot_content(db, next_q, ga, gb, review_points, globally_mastered_names)
+    return {"ok": success, "reason": "generated" if success else "generation_failed"}
+
+
+def _ensure_next_question_generated(
+    db: Session, state: SessionState, cycle: StudyCycle
+) -> bool:
+    """Ensure the next unresolved question has content, generating sync if needed."""
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
+    # Find first non-pending unresolved question
+    next_idx = None
+    for i, q in enumerate(all_qs):
+        if q.status in ("planned", "generation_failed", "generating"):
+            next_idx = i
+            break
+    if next_idx is None:
+        return True  # No more questions needing generation
+
+    next_q = all_qs[next_idx]
+    if next_q.status in ("planned", "generation_failed"):
+        ga, gb, review_points = _get_cycle_grammar_points(db, cycle)
+        material_ids = [cm.material_id for cm in db.query(CycleMaterial).filter(
+            CycleMaterial.cycle_id == cycle.id).all()]
+        _, globally_mastered_names = _build_combined_grammar_pool(db, material_ids)
+        return _generate_slot_content(db, next_q, ga, gb, review_points, globally_mastered_names)
+
+    if next_q.status == "generating":
+        # Brief wait for prefetch to complete
+        import time
+        for _ in range(10):
+            time.sleep(0.1)
+            db.refresh(next_q)
+            if next_q.status == "pending":
+                return True
+            if next_q.status != "generating":
+                break
+        next_q.status = "generation_failed"
+        next_q.generation_error = "Generation timed out"
+        db.commit()
+        return False
+
+    return False
 
 
 # =============================================================================

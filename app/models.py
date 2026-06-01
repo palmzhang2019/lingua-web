@@ -94,7 +94,11 @@ class QuestionAttempt(Base):
     correct_answer = Column(Text, nullable=False)
     is_correct = Column(Boolean, default=False)
     answered_at = Column(DateTime, nullable=True)
-    status = Column(String(20), nullable=False, default="pending")  # pending | answered | skipped | studied
+    status = Column(String(20), nullable=False, default="pending")  # planned | generating | pending | answered | skipped | studied | cancelled_mastered | generation_failed
+    # Phase 3: lazy generation support
+    target_grammar_id = Column(Integer, ForeignKey("grammar_points.id"), nullable=True)
+    generation_error = Column(Text, nullable=True)
+    generation_started_at = Column(DateTime, nullable=True)
 
 
 class WeakPoint(Base):
