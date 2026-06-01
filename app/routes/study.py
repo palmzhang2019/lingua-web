@@ -17,6 +17,7 @@ from app.models import (
     QuestionAttempt,
     SessionState,
     WeakPoint,
+    WeakPointEvent,
     UsageLog,
     TranslationErrorCandidate,
 )
@@ -150,9 +151,18 @@ def _compute_cycle_completion(db: Session, cycle: StudyCycle) -> dict:
 
 
 def _record_weak_point(
-    db: Session, grammar_point_name: str
-) -> None:
-    """Record or increment a grammar weak point from a wrong answer."""
+    db: Session, grammar_point_name: str,
+    cycle_id: int | None = None,
+    source_type: str | None = None,
+    attempt_id: int | None = None,
+    candidate_id: int | None = None,
+) -> str:
+    """Record or increment a grammar weak point from a wrong answer.
+
+    Returns event_type: 'created' or 'hit_existing'.
+    When cycle_id and source_type are provided, also records a
+    WeakPointEvent for provenance-based per-cycle statistics.
+    """
     wp = (
         db.query(WeakPoint)
         .filter(
@@ -166,6 +176,7 @@ def _record_weak_point(
         wp.last_error_at = datetime.datetime.utcnow()
         if wp.error_count >= 2:
             wp.is_active = True
+        event_type = "hit_existing"
     else:
         wp = WeakPoint(
             point_type="grammar",
@@ -175,7 +186,24 @@ def _record_weak_point(
             is_active=False,
         )
         db.add(wp)
+        db.commit()
+        db.refresh(wp)
+        event_type = "created"
+
+    # Record provenance event if cycle context is available
+    if cycle_id is not None and source_type is not None:
+        ev = WeakPointEvent(
+            cycle_id=cycle_id,
+            weak_point_id=wp.id,
+            source_type=source_type,
+            event_type=event_type,
+            source_attempt_id=attempt_id,
+            source_candidate_id=candidate_id,
+            created_at=datetime.datetime.utcnow(),
+        )
+        db.add(ev)
     db.commit()
+    return event_type
 
 
 def _persist_usage_logs(db: Session, cycle_id: int | None = None) -> None:
@@ -410,7 +438,7 @@ def _generate_slot_content(
         contaminated = any(
             mname in " ".join(texts).lower()
             for mname in mnames_clean if mname
-            for texts in [texts]
+            for t2 in [texts]
         )
         if contaminated:
             slot.status = "generation_failed"
@@ -1006,7 +1034,12 @@ async def submit_answer(
         # Phase 4A: auto weak point for target grammar if score_hearts <= 7
         grammar_point_name = payload.get("grammar_point", "")
         if grammar_point_name and score_hearts <= 7:
-            _record_weak_point(db, grammar_point_name)
+            _record_weak_point(
+                db, grammar_point_name,
+                cycle_id=state.current_cycle_id,
+                source_type="translation_low_score_target_grammar",
+                attempt_id=current_q.id,
+            )
 
         # Phase 4A: insert additional-error candidates (if any)
         if evaluation.additional_errors:
@@ -1056,7 +1089,12 @@ async def submit_answer(
     if module_type == "multiple_choice":
         grammar_point_name = payload.get("grammar_point", "")
         if grammar_point_name and not is_correct:
-            _record_weak_point(db, grammar_point_name)
+            _record_weak_point(
+                db, grammar_point_name,
+                cycle_id=state.current_cycle_id,
+                source_type="choice_wrong_answer",
+                attempt_id=current_q.id,
+            )
 
     # --- Persist usage for evaluation call ---
     _persist_usage_logs(db, state.current_cycle_id)
@@ -1305,45 +1343,254 @@ def _ensure_next_question_generated(
 
 
 # =============================================================================
-# GET /study/progress — show current progress
+# Phase 4C: GET /study/progress — Mermaid progress page
 # =============================================================================
 
+def _escape_mermaid(text: str) -> str:
+    """Escape text for safe embedding in Mermaid node labels.
+    
+    Replaces characters that could break Mermaid syntax or inject directives.
+    """
+    if not text:
+        return ""
+    text = text.replace("\\", "＼")  # Backslash → full-width
+    text = text.replace('"', "'").replace('"', "'")
+    text = text.replace('[', '(').replace(']', ')')
+    text = text.replace('{', '(').replace('}', ')')
+    text = text.replace('<', '&lt;').replace('>', '&gt;')
+    text = text.replace('|', '/')
+    text = text.replace('`', "'")
+    text = text.replace('#', '№')   # Mermaid comments
+    text = text.replace('-->', '─→')  # Mermaid arrow syntax
+    text = text.replace('\n', ' ').replace('\r', ' ')
+    return text
+
+
+def _build_current_cycle_mermaid(db: Session, cycle: StudyCycle) -> str:
+    """Build a Mermaid flowchart string for the current in-progress cycle."""
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
+    state = db.query(SessionState).first()
+    
+    # Determine material names
+    cms = db.query(CycleMaterial).filter(CycleMaterial.cycle_id == cycle.id).all()
+    material_names = []
+    for cm in cms:
+        mat = db.query(Material).filter(Material.id == cm.material_id).first()
+        if mat:
+            material_names.append(_escape_mermaid(mat.filename))
+    materials_label = f"素材: {', '.join(material_names[:3])}" if material_names else "素材"
+    
+    # Target grammars
+    ga = db.query(GrammarPoint).filter(GrammarPoint.id == cycle.grammar_a_id).first()
+    gb = db.query(GrammarPoint).filter(GrammarPoint.id == cycle.grammar_b_id).first()
+    ga_name = _escape_mermaid(ga.point_name) if ga else "语法A"
+    gb_name = _escape_mermaid(gb.point_name) if gb else "语法B"
+    
+    # Question statuses
+    ta_qs = [q for q in all_qs if q.module_type == "grammar_a_translation"]
+    tb_qs = [q for q in all_qs if q.module_type == "grammar_b_translation"]
+    mc_qs = [q for q in all_qs if q.module_type == "multiple_choice"]
+    
+    ta_done = all(q.status == "answered" for q in ta_qs) if ta_qs else True
+    tb_done = all(q.status == "answered" for q in tb_qs) if tb_qs else True
+    mc_done = all(q.status == "answered" for q in mc_qs) if mc_qs else True
+    cycle_done = cycle.completed_at is not None
+    
+    # Candidate state
+    from app.models import TranslationErrorCandidate
+    pending = db.query(TranslationErrorCandidate).filter(
+        TranslationErrorCandidate.cycle_id == cycle.id,
+        TranslationErrorCandidate.status == "pending",
+    ).count()
+    
+    review_state = "未开始"
+    if pending > 0:
+        review_state = "待处理"
+    elif ta_done and tb_done:
+        # Check if any candidates were ever created
+        total_candidates = db.query(TranslationErrorCandidate).filter(
+            TranslationErrorCandidate.cycle_id == cycle.id
+        ).count()
+        if total_candidates > 0:
+            review_state = "已处理"
+        else:
+            review_state = "无需处理"
+    
+    # Current module for "进行中" state
+    current_mod = state.current_module if state else None
+    
+    # Build node states
+    def node_state(mod_type: str, is_done: bool) -> str:
+        if is_done:
+            return "已完成"
+        if current_mod == mod_type:
+            return "进行中"
+        return "未开始"
+    
+    ta_state = "已完成" if ta_done else (node_state("grammar_a_translation", False))
+    tb_state = "已完成" if tb_done else (node_state("grammar_b_translation", False))
+    mc_state = "已完成" if mc_done else (node_state("multiple_choice", False))
+    
+    # Mermaid flowchart (using escaped labels)
+    lines = ["flowchart LR"]
+    lines.append(f'    M[\"📁 {materials_label}\"] --> GA["📝 {ga_name} ({ta_state})"]')
+    lines.append(f'    GA --> GB["📝 {gb_name} ({tb_state})"]')
+    lines.append(f'    GB --> REV["🔍 附加错误审查 ({_escape_mermaid(review_state)})"]')
+    lines.append(f'    REV --> MC["🎯 选择题模块 ({_escape_mermaid(mc_state)})"]')
+    lines.append(f'    MC --> END["🏁 Cycle 完成"]')
+    
+    # Style nodes
+    lines.append(f'    style M fill:#e8f4fd,stroke:#3498db')
+    if ta_done:
+        lines.append(f'    style GA fill:#d4edda,stroke:#27ae60')
+    elif current_mod == "grammar_a_translation":
+        lines.append(f'    style GA fill:#fff3cd,stroke:#f39c12')
+    if tb_done:
+        lines.append(f'    style GB fill:#d4edda,stroke:#27ae60')
+    elif current_mod == "grammar_b_translation":
+        lines.append(f'    style GB fill:#fff3cd,stroke:#f39c12')
+    if review_state in ("已处理", "无需处理"):
+        lines.append(f'    style REV fill:#d4edda,stroke:#27ae60')
+    elif review_state == "待处理":
+        lines.append(f'    style REV fill:#f8d7da,stroke:#e74c3c')
+    if mc_done:
+        lines.append(f'    style MC fill:#d4edda,stroke:#27ae60')
+    elif current_mod == "multiple_choice":
+        lines.append(f'    style MC fill:#fff3cd,stroke:#f39c12')
+    if cycle_done:
+        lines.append(f'    style END fill:#d4edda,stroke:#27ae60')
+    
+    return "\n".join(lines)
+
+
+def _get_historical_cycle_summaries(db: Session) -> list[dict]:
+    """Get summary data for all completed cycles (excluding current unfinished)."""
+    state = db.query(SessionState).first()
+    current_cycle_id = state.current_cycle_id if state else None
+    
+    cycles = db.query(StudyCycle).filter(
+        StudyCycle.completed_at.isnot(None)
+    ).order_by(StudyCycle.id.desc()).all()
+    
+    summaries = []
+    for cycle in cycles:
+        if cycle.id == current_cycle_id and not cycle.completed_at:
+            continue  # Don't show current unfinished cycle in historical list
+        
+        cms = db.query(CycleMaterial).filter(CycleMaterial.cycle_id == cycle.id).all()
+        mats = []
+        for cm in cms:
+            m = db.query(Material).filter(Material.id == cm.material_id).first()
+            if m:
+                mats.append(m.filename)
+        
+        ga = db.query(GrammarPoint).filter(GrammarPoint.id == cycle.grammar_a_id).first()
+        gb = db.query(GrammarPoint).filter(GrammarPoint.id == cycle.grammar_b_id).first()
+        
+        # Final score
+        score = _compute_final_cycle_score(db, cycle)
+        has_hearts = False
+        if score:
+            has_hearts = any(
+                q.score_hearts is not None
+                for q in _get_sorted_cycle_questions(db, cycle.id)
+                if q.status == "answered"
+            )
+        
+        # Weak-point counts: use WeakPointEvent provenance for reliable cycles
+        all_qs = _get_sorted_cycle_questions(db, cycle.id)
+        
+        # Query WeakPointEvent records for this cycle
+        events = db.query(WeakPointEvent).filter(
+            WeakPointEvent.cycle_id == cycle.id
+        ).all()
+        
+        if events:
+            # Reliable provenance exists
+            new_count = sum(1 for e in events if e.event_type == "created")
+            re_hit_count = sum(1 for e in events if e.event_type == "hit_existing")
+        else:
+            # Legacy cycle without provenance
+            new_count = None
+            re_hit_count = None
+        
+        summary = {
+            "id": cycle.id,
+            "completed_at": cycle.completed_at.strftime("%Y-%m-%d %H:%M") if cycle.completed_at else "-",
+            "materials": ", ".join(mats) if mats else "-",
+            "grammar_a": ga.point_name if ga else "-",
+            "grammar_b": gb.point_name if gb else "-",
+            "has_hearts": has_hearts,
+            "score_display": (
+                f"{score['final_score_percent']}%" if score else
+                ("旧版记录" if not has_hearts else "-")
+            ),
+            "new_wp": new_count if new_count is not None else "—",
+            "re_hit_wp": re_hit_count if re_hit_count is not None else "—",
+            "is_valid_completion": cycle.is_valid_completion,
+            "is_legacy_stats": new_count is None,
+        }
+        summaries.append(summary)
+    
+    return summaries
+
+
 @router.get("/progress", response_class=HTMLResponse)
-async def study_progress(
+async def study_progress_mermaid(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """Display study progress for the active cycle."""
+    """Display learning progress with Mermaid flowchart and historical summaries."""
     state = _get_or_create_session_state(db)
-    if not state.current_cycle_id:
-        return templates.TemplateResponse(
-            request, "base.html",
-            {"content": "<p>还没有开始学习。</p><a href='/materials' class='btn btn-primary'>去素材列表</a>"},
-        )
-
-    stats = _compute_cycle_completion(db, db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first())
-    all_qs = _get_sorted_cycle_questions(db, state.current_cycle_id)
-
-    # Phase 4A: compute final cycle score for display on progress page
-    final_score = _compute_final_cycle_score(db, db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first())
-
+    current_cycle = None
+    current_cycle_mermaid = None
+    supporting_text = None
+    historical_summaries = []
+    final_score = None
+    
+    if state and state.current_cycle_id:
+        current_cycle = db.query(StudyCycle).filter(
+            StudyCycle.id == state.current_cycle_id
+        ).first()
+        if current_cycle and not current_cycle.completed_at:
+            current_cycle_mermaid = _build_current_cycle_mermaid(db, current_cycle)
+            
+            # Supporting text
+            ga = db.query(GrammarPoint).filter(GrammarPoint.id == current_cycle.grammar_a_id).first()
+            gb = db.query(GrammarPoint).filter(GrammarPoint.id == current_cycle.grammar_b_id).first()
+            cms = db.query(CycleMaterial).filter(
+                CycleMaterial.cycle_id == current_cycle.id
+            ).all()
+            mat_names = []
+            for cm in cms:
+                m = db.query(Material).filter(Material.id == cm.material_id).first()
+                if m:
+                    mat_names.append(m.filename)
+            
+            from app.models import TranslationErrorCandidate
+            pending_count = db.query(TranslationErrorCandidate).filter(
+                TranslationErrorCandidate.cycle_id == current_cycle.id,
+                TranslationErrorCandidate.status == "pending",
+            ).count()
+            
+            supporting_text = {
+                "materials": ", ".join(mat_names) if mat_names else "-",
+                "grammar_a": ga.point_name if ga else "-",
+                "grammar_b": gb.point_name if gb else "-",
+                "current_module": state.current_module or "-",
+                "pending_candidates": pending_count,
+            }
+    
+    # Historical summaries (all completed cycles)
+    historical_summaries = _get_historical_cycle_summaries(db)
+    
     return templates.TemplateResponse(
-        request, "study_result.html",
+        request, "progress.html",
         {
-            "cycle": db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first(),
-            "total": stats["total"],
-            "answered": stats["answered"],
-            "correct": stats["correct"],
-            "skipped": stats["skipped"],
-            "studied": stats["studied"],
-            "cancelled_mastered": stats["cancelled_mastered"],
-            "accuracy": stats["accuracy"],
-            "questions": all_qs,
-            "in_progress": not stats["is_done"],
-            "had_skipped_module": stats["had_skipped_module"],
-            "is_valid_completion": stats["is_valid_completion"],
-            "module_statuses": stats["module_statuses"],
-            "final_score": final_score,
+            "current_cycle": current_cycle,
+            "current_cycle_mermaid": current_cycle_mermaid,
+            "supporting_text": supporting_text,
+            "historical_summaries": historical_summaries,
         },
     )
 
@@ -1468,7 +1715,13 @@ async def add_candidate_weak_point(
         return HTMLResponse("Not found or already processed", status_code=400)
     candidate.status = "added"
     candidate.decided_at = datetime.datetime.utcnow()
-    _record_weak_point(db, candidate.description)
+    _record_weak_point(
+        db, candidate.description,
+        cycle_id=candidate.cycle_id,
+        source_type="translation_candidate_confirmed",
+        attempt_id=candidate.source_attempt_id,
+        candidate_id=candidate.id,
+    )
     db.commit()
     if not _get_pending_candidates(db, candidate.cycle_id):
         return RedirectResponse(url="/study/current", status_code=303)

@@ -137,6 +137,27 @@ class WeakPoint(Base):
     is_active = Column(Boolean, default=True)
 
 
+class WeakPointEvent(Base):
+    """Per-cycle provenance for each weak-point trigger event.
+
+    Each qualifying weak-point write (low-heart translation auto-insert,
+    user-confirmed candidate, wrong-choice answer) records one event row.
+    Enables accurate new-vs-re-hit counts per cycle without inferring from
+    aggregate WeakPoint.error_count.
+    """
+
+    __tablename__ = "weak_point_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cycle_id = Column(Integer, ForeignKey("study_cycles.id"), nullable=False)
+    weak_point_id = Column(Integer, ForeignKey("weak_points.id"), nullable=True)
+    source_type = Column(String(50), nullable=False)  # translation_low_score_target_grammar | translation_candidate_confirmed | choice_wrong_answer
+    event_type = Column(String(20), nullable=False)  # created | hit_existing
+    source_attempt_id = Column(Integer, ForeignKey("question_attempts.id"), nullable=True)
+    source_candidate_id = Column(Integer, ForeignKey("translation_error_candidates.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
 class SessionState(Base):
     """Current study session state for resume support."""
 
