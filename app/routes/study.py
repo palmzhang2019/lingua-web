@@ -793,6 +793,174 @@ def _build_replacement_html(
     )
 
 
+# =============================================================================
+# Phase 5D-2: Legacy broken-cycle recovery preview and confirmed repair
+# =============================================================================
+
+
+def _detect_legacy_broken_cycle(
+    db: Session,
+) -> tuple[bool, StudyCycle | None, str | None]:
+    """Detect if the current active incomplete cycle has a legacy mastered-target anomaly.
+
+    An anomaly exists when the cycle is unfinished and at least one of its
+    current target grammars has mastered=True, indicating the pre-Phase-5D-1
+    cancel-only behavior was applied and the cycle was never replaced.
+
+    If both targets are anomalous, grammar A is reported first.
+    Returns (is_anomaly, cycle, position).
+    """
+    state = db.query(SessionState).first()
+    if not state or not state.current_cycle_id:
+        return False, None, None
+
+    cycle = db.query(StudyCycle).filter(
+        StudyCycle.id == state.current_cycle_id,
+        StudyCycle.completed_at.is_(None),
+    ).first()
+    if not cycle:
+        return False, None, None
+
+    ga = db.query(GrammarPoint).filter(
+        GrammarPoint.id == cycle.grammar_a_id
+    ).first()
+    if ga and ga.mastered:
+        return True, cycle, "grammar_a"
+
+    gb = db.query(GrammarPoint).filter(
+        GrammarPoint.id == cycle.grammar_b_id
+    ).first()
+    if gb and gb.mastered:
+        return True, cycle, "grammar_b"
+
+    return False, None, None
+
+
+def _build_legacy_recovery_preview_data(
+    db: Session, cycle: StudyCycle, position: str
+) -> dict:
+    """Build preview data for legacy recovery (read-only, no mutation)."""
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
+
+    if position == "grammar_a":
+        withdrawn_gp = db.query(GrammarPoint).filter(
+            GrammarPoint.id == cycle.grammar_a_id
+        ).first()
+        surviving_gp = db.query(GrammarPoint).filter(
+            GrammarPoint.id == cycle.grammar_b_id
+        ).first()
+        translation_module = "grammar_a_translation"
+    else:
+        withdrawn_gp = db.query(GrammarPoint).filter(
+            GrammarPoint.id == cycle.grammar_b_id
+        ).first()
+        surviving_gp = db.query(GrammarPoint).filter(
+            GrammarPoint.id == cycle.grammar_a_id
+        ).first()
+        translation_module = "grammar_b_translation"
+
+    withdrawn_name = withdrawn_gp.point_name if withdrawn_gp else "?"
+    surviving_name = surviving_gp.point_name if surviving_gp else "?"
+
+    replacement = _find_eligible_replacement_grammar(db, cycle, withdrawn_gp.id) if withdrawn_gp else None
+    has_replacement = replacement is not None
+
+    withdrawn_translation_slots = [
+        q for q in all_qs if q.module_type == translation_module
+    ]
+    mc_slots = [q for q in all_qs if q.module_type == "multiple_choice"]
+    if position == "grammar_a":
+        withdrawn_mc_slots = mc_slots[:2]
+    else:
+        withdrawn_mc_slots = mc_slots[2:4] if len(mc_slots) >= 4 else []
+
+    answered_translations = sum(
+        1 for q in withdrawn_translation_slots if q.status == "answered"
+    )
+
+    return {
+        "is_legacy": True,
+        "position": position,
+        "position_label": "语法 A" if position == "grammar_a" else "语法 B",
+        "withdrawn_name": withdrawn_name,
+        "surviving_name": surviving_name,
+        "has_replacement": has_replacement,
+        "replacement_name": replacement.point_name if replacement else None,
+        "translation_slot_count": len(withdrawn_translation_slots),
+        "answered_translation_count": answered_translations,
+        "mc_slot_count": len(withdrawn_mc_slots),
+    }
+
+
+def _reset_contaminated_mc_slot(slot: QuestionAttempt) -> None:
+    """Reset an MC slot that failed due to MC_MASTERED_GRAMMAR_CONTAMINATION.
+
+    Clears the failure state so the slot can be regenerated through
+    the existing generation/retry mechanism.
+    """
+    slot.question_payload_json = {"type": "multiple_choice"}
+    slot.correct_answer = ""
+    slot.user_answer = None
+    slot.is_correct = False
+    slot.answered_at = None
+    slot.score_hearts = None
+    slot.target_grammar_correct = None
+    slot.generation_error = None
+    slot.generation_started_at = None
+    slot.status = "planned"
+
+
+def _build_legacy_recovery_preview_html(preview: dict) -> str:
+    """Build HTML for the legacy recovery preview page.
+
+    All dynamic grammar/material-derived values are HTML-escaped.
+    """
+    import html
+
+    withdrawn_escaped = html.escape(preview["withdrawn_name"])
+    surviving_escaped = html.escape(preview["surviving_name"])
+    position_label = preview["position_label"]
+
+    if preview["has_replacement"]:
+        replacement_escaped = html.escape(preview["replacement_name"] or "")
+        return (
+            "<div class='card flash-warning'>"
+            "<h2>⚠️ 需要恢复学习进程</h2>"
+            f"<p>检测到 {position_label} 「{withdrawn_escaped}」已被标记为掌握，"
+            "但当前学习循环尚未完成。</p>"
+            "<p>以下操作将纠正此状态：</p>"
+            "<ul>"
+            f"<li><strong>原始语法：</strong>{withdrawn_escaped}（维持已掌握状态）</li>"
+            f"<li><strong>替换语法：</strong>{replacement_escaped}</li>"
+            f"<li><strong>将重置：</strong>{preview['translation_slot_count']} 道翻译题 + "
+            f"{preview['mc_slot_count']} 道辨义选择题</li>"
+            "<li>对应得分、附加错误候选和弱项记录将被撤销</li>"
+            f"<li>「{surviving_escaped}」的已有学习记录不受影响</li>"
+            "</ul>"
+            "<form method='POST' action='/study/legacy_recovery/confirm_replacement' style='margin-top:1rem;'>"
+            "<button type='submit' class='btn btn-primary'>确认恢复 — 替换语法并继续学习</button>"
+            "</form>"
+            "</div>"
+        )
+    else:
+        return (
+            "<div class='card flash-warning'>"
+            "<h2>⚠️ 需要恢复学习进程</h2>"
+            f"<p>检测到 {position_label} 「{withdrawn_escaped}」已被标记为掌握，"
+            "但当前素材中没有可用的替换语法。</p>"
+            "<p>您可以选择恢复此语法为未掌握状态，继续当前学习循环：</p>"
+            "<ul>"
+            f"<li><strong>恢复的语法：</strong>{withdrawn_escaped}（取消掌握标记）</li>"
+            "<li>已有的翻译答案、得分、候选和弱项记录保持不变</li>"
+            "<li>仅重置因语法冲突而失败的选择题</li>"
+            "</ul>"
+            "<form method='POST' action='/study/legacy_recovery/confirm_restore' style='margin-top:1rem;'>"
+            "<button type='submit' class='btn btn-primary'>确认恢复 — 取消掌握并继续学习</button>"
+            "</form>"
+            "</div>"
+        )
+
+
 def _build_answer_feedback_html(
     is_correct: bool, expected: str, user_answer: str, explanation: str | None = None
 ) -> str:
@@ -1088,6 +1256,11 @@ async def current_question(
                 )
             },
         )
+
+    # Phase 5D-2: Check for legacy broken-cycle anomaly before normal flow
+    is_legacy, _, _ = _detect_legacy_broken_cycle(db)
+    if is_legacy:
+        return RedirectResponse(url="/study/legacy_recovery", status_code=303)
 
     cycle = db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first()
     if not cycle:
@@ -2362,3 +2535,143 @@ def _compute_final_cycle_score(db: Session, cycle: StudyCycle) -> dict | None:
         "scored_count": len(scored),
         "excluded_count": excluded,
     }
+
+
+# =============================================================================
+# Phase 5D-2: Legacy recovery preview and confirmation routes
+# =============================================================================
+
+
+@router.get("/legacy_recovery", response_class=HTMLResponse)
+async def legacy_recovery_preview(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Show the recovery preview for a legacy broken-cycle anomaly.
+    This GET route performs no mutation.
+    """
+    is_legacy, cycle, position = _detect_legacy_broken_cycle(db)
+    if not is_legacy or not cycle or not position:
+        return RedirectResponse(url="/study/current", status_code=303)
+
+    preview = _build_legacy_recovery_preview_data(db, cycle, position)
+    content_html = _build_legacy_recovery_preview_html(preview)
+
+    return templates.TemplateResponse(
+        request, "base.html",
+        {"content": content_html},
+    )
+
+
+@router.post("/legacy_recovery/confirm_replacement")
+async def legacy_recovery_confirm_replacement(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Apply legacy recovery using Phase 5D-1 replacement transaction.
+    Original grammar is already mastered=True — set is a harmless no-op.
+    """
+    is_legacy, cycle, position = _detect_legacy_broken_cycle(db)
+    if not is_legacy or not cycle or not position:
+        return HTMLResponse("No legacy anomaly detected", status_code=400)
+
+    # Identify withdrawn grammar
+    if position == "grammar_a":
+        withdrawn_gp = db.query(GrammarPoint).filter(
+            GrammarPoint.id == cycle.grammar_a_id
+        ).first()
+    else:
+        withdrawn_gp = db.query(GrammarPoint).filter(
+            GrammarPoint.id == cycle.grammar_b_id
+        ).first()
+    if not withdrawn_gp:
+        return HTMLResponse("Withdrawn grammar not found", status_code=400)
+
+    replacement = _find_eligible_replacement_grammar(db, cycle, withdrawn_gp.id)
+    if not replacement:
+        return HTMLResponse("No eligible replacement available", status_code=400)
+
+    # Reuse Phase 5D-1 atomic transaction
+    # withdrawn_grammar.mastered=True is a no-op (already True) but harmless
+    _execute_manual_mastered_replacement(db, cycle, withdrawn_gp, replacement)
+
+    return templates.TemplateResponse(
+        request, "base.html",
+        {
+            "content": _build_replacement_html(
+                withdrawn_gp.point_name, replacement.point_name, position
+            ),
+        },
+    )
+
+
+@router.post("/legacy_recovery/confirm_restore")
+async def legacy_recovery_confirm_restore(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Restore the original grammar to mastered=False and reset
+    only contaminated MC slots. Existing translations/scores/candidates
+    and weak-point effects are preserved.
+    """
+    is_legacy, cycle, position = _detect_legacy_broken_cycle(db)
+    if not is_legacy or not cycle or not position:
+        return HTMLResponse("No legacy anomaly detected", status_code=400)
+
+    if position == "grammar_a":
+        withdrawn_gp = db.query(GrammarPoint).filter(
+            GrammarPoint.id == cycle.grammar_a_id
+        ).first()
+    else:
+        withdrawn_gp = db.query(GrammarPoint).filter(
+            GrammarPoint.id == cycle.grammar_b_id
+        ).first()
+    if not withdrawn_gp:
+        return HTMLResponse("Withdrawn grammar not found", status_code=400)
+
+    # Confirm no replacement exists (safety check against wrong confirmation endpoint)
+    replacement = _find_eligible_replacement_grammar(db, cycle, withdrawn_gp.id)
+    if replacement:
+        return HTMLResponse(
+            "A replacement exists — use the replacement path instead",
+            status_code=400,
+        )
+
+    # ---- Atomic transaction ----
+    # Step 1: Restore grammar to unmastered
+    withdrawn_gp.mastered = False
+
+    # Step 2: Identify MC distinction slots for withdrawn target position
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
+    mc_slots = [q for q in all_qs if q.module_type == "multiple_choice"]
+    if position == "grammar_a":
+        target_mc_slots = mc_slots[:2]
+    else:
+        target_mc_slots = mc_slots[2:4] if len(mc_slots) >= 4 else []
+
+    # Step 3: Reset only contaminated MC slots (generation failed due to mastered grammar)
+    # Support both current sanitized code and pre-Phase 5C static value
+    _contamination_errors = {
+        "MC_MASTERED_GRAMMAR_CONTAMINATION",
+        "Generated content contains mastered grammar",
+    }
+    for slot in target_mc_slots:
+        if slot.generation_error in _contamination_errors:
+            _reset_contaminated_mc_slot(slot)
+
+    # Step 4: Adjust session — find first pending question
+    state = db.query(SessionState).first()
+    if state and state.current_cycle_id == cycle.id:
+        first_pending_idx = _first_pending_question_index(all_qs)
+        if first_pending_idx is not None:
+            state.current_question_index = first_pending_idx
+            state.current_module = all_qs[first_pending_idx].module_type
+        else:
+            state.current_question_index = len(all_qs)
+            _compute_cycle_completion(db, cycle)
+        state.updated_at = datetime.datetime.utcnow()
+
+    db.commit()
+    # ---- End atomic transaction ----
+
+    return RedirectResponse(url="/study/current", status_code=303)
