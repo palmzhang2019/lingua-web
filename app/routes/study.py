@@ -1017,23 +1017,50 @@ async def submit_answer(
                 },
             )
 
-        # Phase 4A: persist heart score and derive is_correct
+        # Phase 4D: validate LLM contract (target_grammar_correct + score_hearts pair)
         score_hearts = evaluation.score_hearts
-        # Clamp 0-10 for safety
         score_hearts = max(0, min(10, score_hearts))
-        is_correct = score_hearts >= 8
+        tgc = getattr(evaluation, "target_grammar_correct", None)
+
+        # Validate pair: true ↔ 6-10, false ↔ 0-5, missing/non-bool → failure
+        _valid_pair = False
+        if isinstance(tgc, bool):
+            if tgc is True and 6 <= score_hearts <= 10:
+                _valid_pair = True
+            elif tgc is False and 0 <= score_hearts <= 5:
+                _valid_pair = True
+
+        if not _valid_pair:
+            # Contradictory/malformed evaluation — do not persist anything
+            # Show retryable feedback using existing safe failure pattern
+            return templates.TemplateResponse(
+                request, "base.html",
+                {
+                    "content": (
+                        "<div class='card flash-error'>"
+                        "<strong>评分结果不一致，请重试。</strong>"
+                        "<p style='margin-top: 0.5rem; color: #555;'>"
+                        "评估返回了矛盾的结果。请重新提交答案。</p></div>"
+                        "<a href='/study/current' class='btn btn-primary'>重试</a>"
+                    )
+                },
+            )
+
+        # Phase 4D: assess pass/fail using new >=6 / <=5 threshold
+        is_correct = score_hearts >= 6
 
         current_q.user_answer = answer
         current_q.score_hearts = score_hearts
+        current_q.target_grammar_correct = tgc
         current_q.is_correct = is_correct
         current_q.answered_at = datetime.datetime.utcnow()
         current_q.status = "answered"
         current_q.correct_answer = evaluation.corrected_answer_ja
         db.commit()
 
-        # Phase 4A: auto weak point for target grammar if score_hearts <= 7
+        # Phase 4D: auto weak point for target grammar only if target_grammar_correct is false and score <= 5
         grammar_point_name = payload.get("grammar_point", "")
-        if grammar_point_name and score_hearts <= 7:
+        if grammar_point_name and not tgc and score_hearts <= 5:
             _record_weak_point(
                 db, grammar_point_name,
                 cycle_id=state.current_cycle_id,

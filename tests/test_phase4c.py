@@ -53,8 +53,9 @@ class MockMC:
         self.question_role = "review"
 
 class MockEvalV2:
-    def __init__(self, score_hearts=8, additional_errors=None):
+    def __init__(self, score_hearts=8, additional_errors=None, target_grammar_correct=True):
         self.score_hearts = score_hearts
+        self.target_grammar_correct = target_grammar_correct
         self.feedback_zh = "反馈"
         self.corrected_answer_ja = "正解"
         self.reason_zh = "理由"

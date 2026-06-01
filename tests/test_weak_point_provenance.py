@@ -2,7 +2,7 @@
 new-vs-re-hit aggregation across all three locked source types.
 
 Rules (from Phase 4C locked product semantics):
-- translation_low_score_target_grammar: score_hearts <= 7 auto-creates or
+- translation_low_score_target_grammar: target_grammar_correct false + score_hearts <= 5 auto-creates or
   re-hits a weak point for the target grammar.
 - translation_candidate_confirmed: user adds a pending candidate as weak point.
 - choice_wrong_answer: wrong MC answer creates or re-hits a weak point.
@@ -65,8 +65,9 @@ class MockMC:
         self.question_role = "review"
 
 class MockEvalV2:
-    def __init__(self, score_hearts=8, additional_errors=None):
+    def __init__(self, score_hearts=8, additional_errors=None, target_grammar_correct=True):
         self.score_hearts = score_hearts
+        self.target_grammar_correct = target_grammar_correct
         self.feedback_zh = "反馈"
         self.corrected_answer_ja = "正解"
         self.reason_zh = "理由"
@@ -123,12 +124,12 @@ def mock_basic():
 
 @pytest.fixture
 def mock_low_score():
-    """score_hearts=4 (<=7, should trigger auto weak point)"""
+    """score_hearts=4 (<=5, should trigger auto weak point)"""
     with patch("app.routes.study.evaluate_translation_answer_v2") as mev2, \
          patch("app.routes.study.generate_explanation") as me, \
          patch("app.routes.study.generate_one_translation") as mt, \
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
-        mev2.return_value = MockEvalV2(score_hearts=4)
+        mev2.return_value = MockEvalV2(score_hearts=4, target_grammar_correct=False)
         me.return_value = MockExp()
         mt.return_value = MockTrans()
         mmc.return_value = MockMC()
@@ -136,13 +137,14 @@ def mock_low_score():
 
 @pytest.fixture
 def mock_low_with_errors():
-    """score_hearts=7 with additional errors (both auto + candidate sources)"""
+    """score_hearts=5 with additional errors (both auto + candidate sources)"""
     with patch("app.routes.study.evaluate_translation_answer_v2") as mev2, \
          patch("app.routes.study.generate_explanation") as me, \
          patch("app.routes.study.generate_one_translation") as mt, \
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(
-            score_hearts=7,
+            score_hearts=5,
+            target_grammar_correct=False,
             additional_errors=[
                 MockErrorItem(error_type="particle", error_rule_key="particle:を→に:test",
                               description="助词错误"),
@@ -301,15 +303,9 @@ def test_all_three_source_types_integration(client, db, populated_material, mock
         QuestionAttempt.cycle_id == cycle_id
     ).order_by(QuestionAttempt.id).all()
 
-    # Q1 translation: score_hearts=7 with additional errors
+    # Q1 translation: score_hearts=5 (tgc=false) with additional errors
     # This creates source 1 (auto target grammar) and source 2 (pending candidate)
     client.post("/study/answer", data={"answer": "bad answer"}, follow_redirects=False)
-
-    # Q2-Q10: score_hearts=7 (no additional errors in mock_low_with_errors, but low score)
-    # Actually mock_low_with_errors always returns score_hearts=7 with errors
-    # So let's switch mocks: answer Q2-Q9 with inline mock
-    # Actually the mock is fixed for the whole test. Let me use a different approach.
-    # We'll test sources 1 and 2 via this cycle, then manually test source 3.
 
     # Check source 1 event: translation_low_score_target_grammar
     events_cycle1 = db.query(WeakPointEvent).filter(

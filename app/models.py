@@ -101,6 +101,8 @@ class QuestionAttempt(Base):
     generation_started_at = Column(DateTime, nullable=True)
     # Phase 4A: heart scoring
     score_hearts = Column(Integer, nullable=True)  # NULL=unscored/historical, 0-10 for answered translations
+    # Phase 4D: target grammar correctness (validated pair with score_hearts)
+    target_grammar_correct = Column(Boolean, nullable=True)  # NULL=historical/unscored/new-rule: true or false
 
 
 class TranslationErrorCandidate(Base):

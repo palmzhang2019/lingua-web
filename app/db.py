@@ -42,6 +42,8 @@ def init_db() -> None:
     _add_column_if_missing("question_attempts", "generation_started_at", "DATETIME")
     # Phase 4A: heart scoring (safe, idempotent)
     _add_column_if_missing("question_attempts", "score_hearts", "INTEGER")
+    # Phase 4D: target grammar correctness (safe, idempotent)
+    _add_column_if_missing("question_attempts", "target_grammar_correct", "BOOLEAN")
 
 
 def _add_column_if_missing(table: str, column: str, coltype: str):

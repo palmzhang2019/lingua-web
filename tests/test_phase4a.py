@@ -56,8 +56,9 @@ class MockMC:
 
 class MockEvalV2:
     """Mock for evaluate_translation_answer_v2 returning TranslationEvaluationV2."""
-    def __init__(self, score_hearts=8, additional_errors=None):
+    def __init__(self, score_hearts=8, additional_errors=None, target_grammar_correct=True):
         self.score_hearts = score_hearts
+        self.target_grammar_correct = target_grammar_correct
         self.feedback_zh = "反馈信息"
         self.corrected_answer_ja = "正解"
         self.reason_zh = "评分理由"
@@ -120,7 +121,7 @@ def mock_deepseek_low_score():
          patch("app.routes.study.generate_explanation") as me, \
          patch("app.routes.study.generate_one_translation") as mt, \
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
-        mev2.return_value = MockEvalV2(score_hearts=4)
+        mev2.return_value = MockEvalV2(score_hearts=4, target_grammar_correct=False)
         me.return_value = MockExp()
         mt.return_value = MockTrans()
         mmc.return_value = MockMC()
@@ -129,15 +130,16 @@ def mock_deepseek_low_score():
 
 @pytest.fixture
 def mock_deepseek_edge_score():
-    """Mock returning score_hearts=8 (pass boundary) and 7 (fail boundary)."""
-    scores = iter([8, 7, 8, 8, 8, 8, 8, 8, 8, 8])
-    def side_effect(*args, **kwargs):
-        return MockEvalV2(score_hearts=next(scores))
+    """Mock returning score_hearts=8 (pass boundary) and 6 (pass with correct TGC)."""
+    scores = iter([8, 6, 8, 8, 8, 8, 8, 8, 8, 8])
+    def se(*args, **kwargs):
+        s = next(scores)
+        return MockEvalV2(score_hearts=s, target_grammar_correct=(s >= 6))
     with patch("app.routes.study.evaluate_translation_answer_v2") as mev2, \
          patch("app.routes.study.generate_explanation") as me, \
          patch("app.routes.study.generate_one_translation") as mt, \
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
-        mev2.side_effect = side_effect
+        mev2.side_effect = se
         me.return_value = MockExp()
         mt.return_value = MockTrans()
         mmc.return_value = MockMC()
@@ -153,6 +155,7 @@ def mock_deepseek_with_errors():
          patch("app.routes.study.generate_one_multiple_choice") as mmc:
         mev2.return_value = MockEvalV2(
             score_hearts=7,
+            target_grammar_correct=True,
             additional_errors=[
                 MockErrorItem(),
                 MockErrorItem(
@@ -261,7 +264,7 @@ def test_grading_persists_score_hearts(client, db, populated_material, mock_deep
     assert all_qs[0].score_hearts == 10, f"Expected 10, got {all_qs[0].score_hearts}"
 
 def test_8_hearts_is_passed(client, db, populated_material, mock_deepseek_basic):
-    """score_hearts=10 (≥8) sets is_correct=True."""
+    """score_hearts=10 (≥6) sets is_correct=True."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
     state = db.query(SessionState).first()
@@ -273,7 +276,7 @@ def test_8_hearts_is_passed(client, db, populated_material, mock_deepseek_basic)
     assert all_qs[0].is_correct is True
 
 def test_7_hearts_is_not_passed(client, db, populated_material, mock_deepseek_low_score):
-    """score_hearts=4 (≤7) sets is_correct=False."""
+    """score_hearts=4 (≤5, target grammar wrong) sets is_correct=False."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
     state = db.query(SessionState).first()
@@ -311,7 +314,7 @@ def test_malformed_grading_creates_no_score(client, db, populated_material, mock
 # ===========================================================================
 
 def test_low_score_auto_creates_target_weak_point(client, db, populated_material, mock_deepseek_low_score):
-    """score_hearts=4 (≤7) creates weak point for target grammar."""
+    """score_hearts=4 with target grammar wrong creates weak point for target grammar."""
     mat = populated_material
     client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
     state = db.query(SessionState).first()

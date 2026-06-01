@@ -108,7 +108,8 @@ class TranslationErrorItem(BaseModel):
 
 class TranslationEvaluationV2(BaseModel):
     """Extended evaluation of a user's translation answer with heart scoring."""
-    score_hearts: int = Field(description="Score from 0 to 10, where 8+ means acceptable")
+    score_hearts: int = Field(description="Score from 0 to 10. 6+ means acceptable when paired with target_grammar_correct=true. 0-5 when paired with false.")
+    target_grammar_correct: bool = Field(description="Whether the specifically tested target grammar was used correctly")
     feedback_zh: str = Field(description="Feedback in Chinese")
     corrected_answer_ja: str = Field(description="Corrected Japanese answer")
     reason_zh: str = Field(description="Reason for the score in Chinese")
