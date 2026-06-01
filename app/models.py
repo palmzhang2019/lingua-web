@@ -99,6 +99,29 @@ class QuestionAttempt(Base):
     target_grammar_id = Column(Integer, ForeignKey("grammar_points.id"), nullable=True)
     generation_error = Column(Text, nullable=True)
     generation_started_at = Column(DateTime, nullable=True)
+    # Phase 4A: heart scoring
+    score_hearts = Column(Integer, nullable=True)  # NULL=unscored/historical, 0-10 for answered translations
+
+
+class TranslationErrorCandidate(Base):
+    """Additional detected errors from translation answers, pending user review."""
+
+    __tablename__ = "translation_error_candidates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cycle_id = Column(Integer, ForeignKey("study_cycles.id"), nullable=False)
+    source_attempt_id = Column(Integer, ForeignKey("question_attempts.id"), nullable=False)
+    error_type = Column(String(50), nullable=False)  # particle, vocabulary, conjugation, grammar, expression, other
+    error_rule_key = Column(String(200), nullable=False)
+    original_fragment = Column(Text, nullable=False)
+    corrected_fragment = Column(Text, nullable=False)
+    description = Column(Text, nullable=False)
+    suggested_grammar_point_id = Column(Integer, ForeignKey("grammar_points.id"), nullable=True)
+    target_grammar_id = Column(Integer, nullable=True)  # FK not enforced; for traceability
+    status = Column(String(20), nullable=False, default="pending")  # pending, added, ignored
+    occurrence_count = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    decided_at = Column(DateTime, nullable=True)
 
 
 class WeakPoint(Base):

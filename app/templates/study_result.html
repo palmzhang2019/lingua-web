@@ -14,13 +14,22 @@
     {% else %}
     <p style="color: #e67e22; font-size: 1.1rem;">⚠️ 已完成但部分模块被跳过，本次不计入有效完成。</p>
     {% endif %}
+
+    {% if final_score %}
+    <div style="font-size: 3rem; margin: 1rem 0; color: {% if final_score.final_score_percent >= 70 %}#27ae60{% elif final_score.final_score_percent >= 40 %}#f39c12{% else %}#e74c3c{% endif %};">
+        {{ final_score.final_score_percent }}%
+    </div>
+    <p style="font-size: 1rem; color: #555;">
+        最终得分：已评 {{ final_score.scored_count }} 题，排除 {{ final_score.excluded_count }} 题
+    </p>
+    {% endif %}
     {% endif %}
 
     {% if answered > 0 %}
-    <div style="font-size: 3rem; margin: 1.5rem 0; color: {% if accuracy >= 70 %}#27ae60{% elif accuracy >= 40 %}#f39c12{% else %}#e74c3c{% endif %};">
+    <div style="font-size: 2rem; margin: 1rem 0; color: {% if accuracy >= 70 %}#27ae60{% elif accuracy >= 40 %}#f39c12{% else %}#e74c3c{% endif %};">
         {{ accuracy }}%
     </div>
-    <p style="font-size: 1.1rem;">
+    <p style="font-size: 1rem;">
         正确 <strong>{{ correct }}</strong> / {{ answered }} 题（实际作答）
     </p>
     {% else %}
@@ -50,7 +59,7 @@
         <tr>
             <th>#</th>
             <th>模块</th>
-            <th>结果</th>
+            <th>得分</th>
             <th>你的答案</th>
         </tr>
         {% for q in questions %}
@@ -64,7 +73,12 @@
             </td>
             <td>
                 {% if q.status == "answered" %}
-                    {{ '✅' if q.is_correct else '❌' }}
+                    {% if q.score_hearts is not none %}
+                        {% for i in range(q.score_hearts) %}❤️{% endfor %}{% for i in range(10 - q.score_hearts) %}🤍{% endfor %}
+                        ({{ q.score_hearts }}/10)
+                    {% else %}
+                        {{ '✅' if q.is_correct else '❌' }}
+                    {% endif %}
                 {% elif q.status == "skipped" %}
                     ⏭️ 已跳过
                 {% elif q.status == "studied" %}
@@ -72,7 +86,7 @@
                 {% elif q.status == "cancelled_mastered" %}
                     ✅ 已掌握取消
                 {% else %}
-                    ⏳ 未作答
+                    ⏳ {{ q.status }}
                 {% endif %}
             </td>
             <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">

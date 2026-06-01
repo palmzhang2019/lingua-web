@@ -40,6 +40,8 @@ def init_db() -> None:
     _add_column_if_missing("question_attempts", "target_grammar_id", "INTEGER")
     _add_column_if_missing("question_attempts", "generation_error", "TEXT")
     _add_column_if_missing("question_attempts", "generation_started_at", "DATETIME")
+    # Phase 4A: heart scoring (safe, idempotent)
+    _add_column_if_missing("question_attempts", "score_hearts", "INTEGER")
 
 
 def _add_column_if_missing(table: str, column: str, coltype: str):

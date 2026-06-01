@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}审查错误 — Lingua Web{% endblock %}
+{% block content %}
+
+<h1>🔍 翻译错误审查</h1>
+
+<p style="color: #555; margin-bottom: 1rem;">
+    翻译练习已完成。以下是在翻译中发现的附加错误，请逐条处理。
+    （目标语法错误已自动记录到薄弱点，无需再次确认。）
+</p>
+
+{% for c in candidates %}
+<div class="card" style="{% if c._has_prior_ignored %}border-left: 4px solid #e67e22;{% endif %}">
+    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div style="flex: 1;">
+            <p>
+                <span class="tag" style="background: #3498db; color: #fff; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">
+                    {{ c.error_type }}
+                </span>
+                {% if c.occurrence_count and c.occurrence_count > 1 %}
+                <span style="color: #e67e22; font-size: 0.85rem; margin-left: 0.5rem;">
+                    🔄 出现 {{ c.occurrence_count }} 次
+                </span>
+                {% endif %}
+            </p>
+            <p style="margin-top: 0.5rem;">
+                <strong>{{ c.description }}</strong>
+            </p>
+            <p style="color: #7f8c8d; font-size: 0.9rem;">
+                原文：<span style="color: #e74c3c;">{{ c.original_fragment }}</span>
+                → 修正：<span style="color: #27ae60;">{{ c.corrected_fragment }}</span>
+            </p>
+            {% if c._has_prior_ignored %}
+            <p style="color: #e67e22; font-size: 0.9rem; margin-top: 0.3rem;">
+                ⚠️ 之前出现过类似的错误，建议你加入薄弱项
+            </p>
+            {% endif %}
+        </div>
+        <div style="display: flex; gap: 0.5rem; margin-left: 1rem; flex-shrink: 0;">
+            <form action="/study/candidate/{{ c.id }}/add" method="post" style="display: inline;">
+                <button type="submit" class="btn" style="background: #27ae60; color: #fff;">➕ 加入薄弱项</button>
+            </form>
+            {% if not c._has_prior_ignored %}
+            <form action="/study/candidate/{{ c.id }}/ignore" method="post" style="display: inline;">
+                <button type="submit" class="btn" style="background: #95a5a6; color: #fff;">✖ 忽略</button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endfor %}
+
+{% endblock %}

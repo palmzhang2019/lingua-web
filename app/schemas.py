@@ -97,6 +97,28 @@ class TranslationEvaluation(BaseModel):
     reason_zh: str = Field(description="Reason for the evaluation in Chinese")
 
 
+class TranslationErrorItem(BaseModel):
+    """A single additional detected error in a translation answer."""
+    error_type: str = Field(description="Category: particle, vocabulary, conjugation, grammar, expression, other")
+    error_rule_key: str = Field(description="Stable key for deduplication, e.g. 'particle:を→に:乗る'")
+    original_fragment: str = Field(description="The user's incorrect fragment")
+    corrected_fragment: str = Field(description="The corrected version")
+    description: str = Field(description="Human-readable description in Chinese")
+
+
+class TranslationEvaluationV2(BaseModel):
+    """Extended evaluation of a user's translation answer with heart scoring."""
+    score_hearts: int = Field(description="Score from 0 to 10, where 8+ means acceptable")
+    feedback_zh: str = Field(description="Feedback in Chinese")
+    corrected_answer_ja: str = Field(description="Corrected Japanese answer")
+    reason_zh: str = Field(description="Reason for the score in Chinese")
+    additional_errors: list[TranslationErrorItem] = Field(
+        default_factory=list,
+        description="Additional detected errors beyond the target grammar. "
+                    "DO NOT include target-grammar failure here even if score is low.",
+    )
+
+
 class QuestionPayload(BaseModel):
     """
     Unified payload stored in question_attempts.question_payload_json.

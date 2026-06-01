@@ -18,15 +18,16 @@ from app.models import (
     SessionState,
     WeakPoint,
     UsageLog,
+    TranslationErrorCandidate,
 )
-from app.schemas import TranslationExercise, MultipleChoiceQuestion, QuestionPayload
+from app.schemas import TranslationExercise, MultipleChoiceQuestion, QuestionPayload, TranslationEvaluationV2
 from app.agents.generator import (
     generate_explanation,
     generate_translation_exercises,
     generate_multiple_choice,
     generate_one_translation,
     generate_one_multiple_choice,
-    evaluate_translation_answer,
+    evaluate_translation_answer_v2,
 )
 from app.llm import get_and_clear_usage, is_available
 
@@ -755,6 +756,7 @@ async def study_home(
                 "had_skipped_module": stats["had_skipped_module"],
                 "is_valid_completion": stats["is_valid_completion"],
                 "module_statuses": stats["module_statuses"],
+                "final_score": _compute_final_cycle_score(db, cycle),
             },
         )
 
@@ -833,6 +835,7 @@ async def current_question(
                 "had_skipped_module": stats["had_skipped_module"],
                 "is_valid_completion": stats["is_valid_completion"],
                 "module_statuses": stats["module_statuses"],
+                "final_score": _compute_final_cycle_score(db, cycle),
             },
         )
 
@@ -842,6 +845,10 @@ async def current_question(
     state.current_module = current_q.module_type
     state.updated_at = datetime.datetime.utcnow()
     db.commit()
+
+    # Phase 4A: Review gate — if about to enter MC but candidates pending, redirect
+    if current_q.module_type == "multiple_choice" and _check_review_gate(db, cycle.id):
+        return RedirectResponse(url="/study/review_candidates", status_code=303)
 
     current_q = all_qs[state.current_question_index]
     answered_count = sum(1 for q in all_qs if q.status == "answered")
@@ -960,14 +967,14 @@ async def submit_answer(
     is_correct = False
 
     if module_type in ("grammar_a_translation", "grammar_b_translation"):
-        # Translation grading via DeepSeek
+        # Translation grading via DeepSeek (Phase 4A: heart scoring)
         ex = TranslationExercise(
             prompt_zh=payload.get("prompt_zh", ""),
             reference_answer_ja=payload.get("reference_answer_ja", ""),
             grammar_point=payload.get("grammar_point", ""),
             grading_notes=payload.get("grading_notes", ""),
         )
-        evaluation = evaluate_translation_answer(ex, answer)
+        evaluation = evaluate_translation_answer_v2(ex, answer)
 
         if evaluation is None:
             # Evaluation failed — do not advance, show error
@@ -982,17 +989,43 @@ async def submit_answer(
                 },
             )
 
+        # Phase 4A: persist heart score and derive is_correct
+        score_hearts = evaluation.score_hearts
+        # Clamp 0-10 for safety
+        score_hearts = max(0, min(10, score_hearts))
+        is_correct = score_hearts >= 8
+
         current_q.user_answer = answer
-        is_correct = evaluation.is_correct
+        current_q.score_hearts = score_hearts
         current_q.is_correct = is_correct
         current_q.answered_at = datetime.datetime.utcnow()
         current_q.status = "answered"
         current_q.correct_answer = evaluation.corrected_answer_ja
         db.commit()
 
+        # Phase 4A: auto weak point for target grammar if score_hearts <= 7
+        grammar_point_name = payload.get("grammar_point", "")
+        if grammar_point_name and score_hearts <= 7:
+            _record_weak_point(db, grammar_point_name)
+
+        # Phase 4A: insert additional-error candidates (if any)
+        if evaluation.additional_errors:
+            _insert_error_candidates(
+                db, state.current_cycle_id, current_q.id,
+                evaluation.additional_errors,
+            )
+
+        # Build heart-display feedback
         feedback = evaluation.feedback_zh
-        feedback_html = _build_answer_feedback_html(
-            is_correct, evaluation.corrected_answer_ja, answer, feedback
+        hearts_display = "❤️" * score_hearts + "🤍" * (10 - score_hearts)
+        result_text = "正确！" if is_correct else "不正确"
+        feedback_html = (
+            f'<div class="card">'
+            f'<h3>{hearts_display} ({score_hearts}/10) — {result_text}</h3>'
+            f'<p><strong>你的答案：</strong>{answer}</p>'
+            f'<p><strong>参考答案：</strong>{evaluation.corrected_answer_ja}</p>'
+            f'<p style="color: #555; background: #f9f9f9; padding: 0.5rem; border-radius: 4px;">{feedback}</p>'
+            f'</div>'
         )
 
     else:
@@ -1018,10 +1051,12 @@ async def submit_answer(
             is_correct, f"{expected}：{correct_text}", answer
         )
 
-    # --- Day 3: Record weak point for wrong answers ---
-    grammar_point_name = payload.get("grammar_point", "")
-    if grammar_point_name and not is_correct:
-        _record_weak_point(db, grammar_point_name)
+    # --- Phase 4A: Record weak point for wrong answers (MC only) ---
+    # Translation weak points are handled inside the translation branch above.
+    if module_type == "multiple_choice":
+        grammar_point_name = payload.get("grammar_point", "")
+        if grammar_point_name and not is_correct:
+            _record_weak_point(db, grammar_point_name)
 
     # --- Persist usage for evaluation call ---
     _persist_usage_logs(db, state.current_cycle_id)
@@ -1056,6 +1091,10 @@ async def submit_answer(
     ).first()
     if cycle:
         _ensure_next_question_generated(db, state, cycle)
+
+    # ---- Phase 4A: Review gate check — redirect if candidates pending after Q10 ----
+    if cycle and _check_review_gate(db, cycle.id):
+        return RedirectResponse(url="/study/review_candidates", status_code=303)
 
     # Check if finished
     remaining_pending = _first_pending_question_index(all_qs)
@@ -1285,6 +1324,9 @@ async def study_progress(
     stats = _compute_cycle_completion(db, db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first())
     all_qs = _get_sorted_cycle_questions(db, state.current_cycle_id)
 
+    # Phase 4A: compute final cycle score for display on progress page
+    final_score = _compute_final_cycle_score(db, db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first())
+
     return templates.TemplateResponse(
         request, "study_result.html",
         {
@@ -1301,5 +1343,205 @@ async def study_progress(
             "had_skipped_module": stats["had_skipped_module"],
             "is_valid_completion": stats["is_valid_completion"],
             "module_statuses": stats["module_statuses"],
+            "final_score": final_score,
         },
     )
+
+
+# =============================================================================
+# Phase 4A: Helper functions
+# =============================================================================
+
+
+def _insert_error_candidates(
+    db: Session,
+    cycle_id: int,
+    attempt_id: int,
+    additional_errors: list,
+) -> None:
+    """Insert additional-error candidates, merging duplicates by error_rule_key."""
+    for err in additional_errors:
+        rule_key = getattr(err, "error_rule_key", "") or err.get("error_rule_key", "")
+        if not rule_key:
+            continue
+        existing = (
+            db.query(TranslationErrorCandidate)
+            .filter(
+                TranslationErrorCandidate.cycle_id == cycle_id,
+                TranslationErrorCandidate.status == "pending",
+                TranslationErrorCandidate.error_rule_key == rule_key,
+            )
+            .first()
+        )
+        if existing:
+            existing.occurrence_count = (existing.occurrence_count or 1) + 1
+        else:
+            candidate = TranslationErrorCandidate(
+                cycle_id=cycle_id,
+                source_attempt_id=attempt_id,
+                error_type=getattr(err, "error_type", "") or err.get("error_type", "other"),
+                error_rule_key=rule_key,
+                original_fragment=getattr(err, "original_fragment", "") or err.get("original_fragment", ""),
+                corrected_fragment=getattr(err, "corrected_fragment", "") or err.get("corrected_fragment", ""),
+                description=getattr(err, "description", "") or err.get("description", ""),
+                status="pending",
+                occurrence_count=1,
+                created_at=datetime.datetime.utcnow(),
+            )
+            db.add(candidate)
+    db.commit()
+
+
+def _get_pending_candidates(db: Session, cycle_id: int):
+    return (
+        db.query(TranslationErrorCandidate)
+        .filter(
+            TranslationErrorCandidate.cycle_id == cycle_id,
+            TranslationErrorCandidate.status == "pending",
+        )
+        .order_by(TranslationErrorCandidate.id)
+        .all()
+    )
+
+
+def _needs_candidate_review(db: Session, cycle_id: int) -> bool:
+    return (
+        db.query(TranslationErrorCandidate)
+        .filter(
+            TranslationErrorCandidate.cycle_id == cycle_id,
+            TranslationErrorCandidate.status == "pending",
+        )
+        .count() > 0
+    )
+
+
+def _check_review_gate(db: Session, cycle_id: int) -> bool:
+    """Check if both translation modules done with pending candidates.
+    
+    Returns True if all 10 translation questions are answered,
+    NO MC question has been answered yet, and pending candidates exist.
+    """
+    all_qs = _get_sorted_cycle_questions(db, cycle_id)
+    ta_qs = [q for q in all_qs if q.module_type == "grammar_a_translation"]
+    tb_qs = [q for q in all_qs if q.module_type == "grammar_b_translation"]
+    if not all(q.status == "answered" for q in ta_qs + tb_qs):
+        return False
+    mc_qs = [q for q in all_qs if q.module_type == "multiple_choice"]
+    # Gate is active only if NO MC question has been answered yet
+    if any(q.status == "answered" for q in mc_qs):
+        return False
+    return _needs_candidate_review(db, cycle_id)
+
+
+@router.get("/review_candidates", response_class=HTMLResponse)
+async def review_candidates_page(request: Request, db: Session = Depends(get_db)):
+    state = _get_or_create_session_state(db)
+    if not state.current_cycle_id:
+        return RedirectResponse(url="/materials")
+    candidates = _get_pending_candidates(db, state.current_cycle_id)
+    for c in candidates:
+        prior = (
+            db.query(TranslationErrorCandidate)
+            .filter(
+                TranslationErrorCandidate.cycle_id != state.current_cycle_id,
+                TranslationErrorCandidate.error_rule_key == c.error_rule_key,
+                TranslationErrorCandidate.status == "ignored",
+            )
+            .first()
+        )
+        c._has_prior_ignored = prior is not None
+    if not candidates:
+        return RedirectResponse(url="/study/current", status_code=303)
+    return templates.TemplateResponse(
+        request, "review_candidates.html", {"candidates": candidates},
+    )
+
+
+@router.post("/candidate/{candidate_id}/add")
+async def add_candidate_weak_point(
+    request: Request, candidate_id: int, db: Session = Depends(get_db),
+):
+    candidate = db.query(TranslationErrorCandidate).filter(
+        TranslationErrorCandidate.id == candidate_id
+    ).first()
+    if not candidate or candidate.status != "pending":
+        return HTMLResponse("Not found or already processed", status_code=400)
+    candidate.status = "added"
+    candidate.decided_at = datetime.datetime.utcnow()
+    _record_weak_point(db, candidate.description)
+    db.commit()
+    if not _get_pending_candidates(db, candidate.cycle_id):
+        return RedirectResponse(url="/study/current", status_code=303)
+    return RedirectResponse(url="/study/review_candidates", status_code=303)
+
+
+@router.post("/candidate/{candidate_id}/ignore")
+async def ignore_candidate_route(
+    request: Request, candidate_id: int, db: Session = Depends(get_db),
+):
+    candidate = db.query(TranslationErrorCandidate).filter(
+        TranslationErrorCandidate.id == candidate_id
+    ).first()
+    if not candidate or candidate.status != "pending":
+        return HTMLResponse("Not found or already processed", status_code=400)
+    candidate.status = "ignored"
+    candidate.decided_at = datetime.datetime.utcnow()
+    db.commit()
+    if not _get_pending_candidates(db, candidate.cycle_id):
+        return RedirectResponse(url="/study/current", status_code=303)
+    return RedirectResponse(url="/study/review_candidates", status_code=303)
+
+
+def _compute_final_cycle_score(db: Session, cycle: StudyCycle) -> dict | None:
+    """Compute final cycle score (P4A-LOCK-020).
+    
+    For new Phase 4A cycles: translation = score_hearts/10*100, choice correct=100, wrong=0.
+    For pre-Phase-4A cycles (any answered translation with NULL score_hearts):
+    does NOT compute a heart-based score — returns None so legacy statistics display.
+    Excluded: skipped, cancelled_mastered, planned, generating, generation_failed.
+    """
+    all_qs = _get_sorted_cycle_questions(db, cycle.id)
+    scored = []
+    excluded = 0
+    has_new_hearts = False
+    
+    for q in all_qs:
+        if q.status == "answered":
+            if q.module_type in ("grammar_a_translation", "grammar_b_translation"):
+                if q.score_hearts is not None:
+                    # Phase 4A heart-scored translation
+                    scored.append(q.score_hearts / 10.0 * 100)
+                    has_new_hearts = True
+                else:
+                    # Historical translation with only is_correct — skip from heart-based score
+                    # (P4A-LOCK-023: no backfill of artificial heart values)
+                    excluded += 1
+            else:
+                # Multiple choice — always counted
+                scored.append(100.0 if q.is_correct else 0.0)
+        else:
+            excluded += 1
+    
+    # If no Phase 4A heart-scored translations exist in this cycle, don't fabricate a score
+    if not scored or (not has_new_hearts and any(
+        q.module_type in ("grammar_a_translation", "grammar_b_translation")
+        for q in all_qs if q.status == "answered" and q.score_hearts is None
+    )):
+        # Check: if all translations are historical (NULL hearts), return None
+        # so legacy accuracy display is used instead
+        all_translations_historical = all(
+            q.score_hearts is None
+            for q in all_qs
+            if q.status == "answered" and q.module_type in ("grammar_a_translation", "grammar_b_translation")
+        )
+        if all_translations_historical:
+            return None
+    
+    if not scored:
+        return None
+    
+    return {
+        "final_score_percent": round(sum(scored) / len(scored), 1),
+        "scored_count": len(scored),
+        "excluded_count": excluded,
+    }

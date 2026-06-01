@@ -18,6 +18,7 @@ from app.schemas import (
     TranslationExercise,
     MultipleChoiceQuestion,
     TranslationEvaluation,
+    TranslationEvaluationV2,
     QuestionPayload,
 )
 
@@ -80,6 +81,34 @@ RULES:
 - Do NOT require exact match with the reference answer.
 - Accept any answer that conveys the meaning and uses the target grammar acceptably.
 - Minor particle/vocabulary errors that don't affect meaning should still pass.
+- Return valid JSON matching the requested schema. No extra text."""
+
+
+EVALUATION_V2_SYSTEM_PROMPT = """You are a Japanese language grading assistant.
+
+Given a translation exercise and a user's Japanese answer, evaluate:
+1. score_hearts: A score from 0 to 10. 8+ means the answer is semantically acceptable.
+   - 10: Perfect. Natural, correct, uses target grammar flawlessly.
+   - 8-9: Acceptable. Conveys meaning, target grammar used correctly.
+   - 5-7: Partially correct but has meaningful errors.
+   - 1-4: Significant errors.
+   - 0: Completely wrong or unrelated.
+2. feedback_zh: Constructive feedback in Chinese
+3. corrected_answer_ja: A corrected version of the user's Japanese answer
+4. reason_zh: Brief reason for the score in Chinese
+5. additional_errors: A list of specific errors found in the answer, EXCLUDING any failure
+   related to the target grammar itself (target grammar issues are handled separately).
+   Each error item has:
+   - error_type: one of "particle", "vocabulary", "conjugation", "grammar", "expression", "other"
+   - error_rule_key: A stable key for grouping identical errors, e.g. "particle:を→に:乗る"
+   - original_fragment: The user's incorrect fragment in Japanese
+   - corrected_fragment: The correct version in Japanese
+   - description: Chinese description of the error
+
+RULES:
+- DO NOT report target grammar failure as an additional_error. Target grammar is handled separately.
+- Minor particle/vocabulary errors that don't affect meaning should still be reflected in the score.
+- Evaluate based on the grading_notes provided.
 - Return valid JSON matching the requested schema. No extra text."""
 
 
@@ -360,6 +389,41 @@ def evaluate_translation_answer(
     )
     if result is None:
         print("[generator] Translation evaluation failed — returning None")
+        return None
+
+    return result
+
+
+def evaluate_translation_answer_v2(
+    exercise: TranslationExercise,
+    user_answer: str,
+) -> TranslationEvaluationV2 | None:
+    """
+    Evaluate a user's Japanese translation answer using DeepSeek,
+    returning heart scores and additional error details.
+
+    Returns a validated TranslationEvaluationV2, or None if evaluation fails.
+    """
+    if not is_available():
+        print("[generator] LLM not available — cannot evaluate translation")
+        return None
+
+    user_prompt = (
+        f"Exercise prompt (Chinese): {exercise.prompt_zh}\n"
+        f"Reference answer (model): {exercise.reference_answer_ja}\n"
+        f"Target grammar: {exercise.grammar_point}\n"
+        f"Grading notes: {exercise.grading_notes}\n\n"
+        f"User's answer: {user_answer}\n\n"
+        "Evaluate this answer. Provide score_hearts (0-10) and list any additional errors."
+    )
+
+    result = structured_extraction(
+        EVALUATION_V2_SYSTEM_PROMPT,
+        user_prompt,
+        TranslationEvaluationV2,
+    )
+    if result is None:
+        print("[generator] Translation evaluation v2 failed — returning None")
         return None
 
     return result
