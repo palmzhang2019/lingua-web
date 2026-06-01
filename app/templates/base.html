@@ -19,6 +19,7 @@
             display: flex;
             gap: 1.5rem;
             align-items: center;
+            flex-wrap: wrap;
         }
         nav a { color: #ecf0f1; text-decoration: none; font-weight: 500; }
         nav a:hover { color: #1abc9c; }
@@ -39,6 +40,9 @@
             cursor: pointer;
             font-size: 0.9rem;
             text-decoration: none;
+            text-align: center;
+            max-width: 100%;
+            white-space: normal;
         }
         .btn-primary { background: #3498db; color: #fff; }
         .btn-primary:hover { background: #2980b9; }
@@ -92,6 +96,58 @@
         .extraction-status { font-size: 0.85rem; }
         .success { color: #27ae60; }
         .warning { color: #e67e22; }
+        .action-row {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .action-row > form { margin: 0; }
+        .split-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+        }
+        .split-row-main {
+            flex: 1 1 320px;
+            min-width: 0;
+        }
+        .split-row-side {
+            flex: 0 0 auto;
+        }
+        .responsive-scroll {
+            width: 100%;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .touch-input,
+        textarea.touch-input {
+            width: 100%;
+            max-width: 100%;
+        }
+        .break-long {
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+        @media (max-width: 640px) {
+            .container { padding: 0.75rem; }
+            nav { gap: 0.75rem; padding: 0.75rem; }
+            .card { padding: 0.9rem 1rem; }
+            .mobile-stack {
+                flex-direction: column;
+                align-items: stretch !important;
+            }
+            .mobile-stack > * {
+                width: 100%;
+                max-width: 100%;
+            }
+            .mobile-stack .btn,
+            .mobile-stack form .btn {
+                display: block;
+                width: 100%;
+            }
+        }
     </style>
 </head>
 <body>

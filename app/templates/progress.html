@@ -2,6 +2,40 @@
 {% block title %}学习进度 — Lingua Web{% endblock %}
 {% block content %}
 
+<style>
+    .progress-supporting-text {
+        background: #f8f9fa;
+        padding: 0.75rem;
+        border-radius: 6px;
+        margin: 0.75rem 0;
+        font-size: 0.9rem;
+        color: #555;
+    }
+    .mermaid-scroll-wrapper {
+        margin: 1rem 0;
+        padding-bottom: 0.25rem;
+    }
+    .mermaid-scroll-inner {
+        min-width: max-content;
+    }
+    .mermaid-diagram {
+        min-width: 680px;
+    }
+    .mermaid-diagram svg {
+        display: block;
+        height: auto;
+        max-width: none;
+    }
+    @media (max-width: 640px) {
+        .progress-supporting-text strong {
+            display: inline;
+        }
+        .mermaid-diagram {
+            min-width: 560px;
+        }
+    }
+</style>
+
 <h1>📊 学习进度</h1>
 
 {% if current_cycle and not current_cycle.completed_at %}
@@ -10,7 +44,7 @@
     <h2>当前进度 — Cycle #{{ current_cycle.id }}</h2>
 
     {% if supporting_text %}
-    <div style="background: #f8f9fa; padding: 0.75rem; border-radius: 6px; margin: 0.75rem 0; font-size: 0.9rem; color: #555;">
+    <div class="progress-supporting-text break-long">
         <strong>素材：</strong>{{ supporting_text.materials }}<br>
         <strong>语法A：</strong>{{ supporting_text.grammar_a }} |
         <strong>语法B：</strong>{{ supporting_text.grammar_b }}<br>
@@ -22,8 +56,12 @@
     {% endif %}
 
     {% if current_cycle_mermaid %}
-    <div class="mermaid" style="margin: 1rem 0; overflow-x: auto;">
+    <div class="responsive-scroll mermaid-scroll-wrapper" data-testid="mermaid-scroll-wrapper">
+        <div class="mermaid-scroll-inner">
+            <div class="mermaid mermaid-diagram">
 {{ current_cycle_mermaid }}
+            </div>
+        </div>
     </div>
     {% endif %}
 </div>
@@ -40,39 +78,45 @@
 <!-- Historical completed cycles -->
 <div class="card" style="margin-top: 1.5rem;">
     <h2>历史完成记录</h2>
-    <table>
-        <tr>
-            <th>Cycle</th>
-            <th>完成日期</th>
-            <th>素材</th>
-            <th>语法A</th>
-            <th>语法B</th>
-            <th>成绩</th>
-            <th>新增薄弱项</th>
-            <th>再命中</th>
-            <th>有效完成</th>
-        </tr>
-        {% for s in historical_summaries %}
-        <tr>
-            <td>#{{ s.id }}</td>
-            <td>{{ s.completed_at }}</td>
-            <td style="max-width: 150px; overflow: hidden; text-overflow: ellipsis;">{{ s.materials }}</td>
-            <td>{{ s.grammar_a }}</td>
-            <td>{{ s.grammar_b }}</td>
-            <td>{% if s.has_hearts %}<strong>{{ s.score_display }}</strong>{% else %}<span style="color: #7f8c8d;">{{ s.score_display }}</span>{% endif %}</td>
-            <td>{{ s.new_wp }}{% if s.is_legacy_stats %}<br><small style="color: #999;">无完整统计</small>{% endif %}</td>
-            <td>{{ s.re_hit_wp }}{% if s.is_legacy_stats %}<br><small style="color: #999;">无完整统计</small>{% endif %}</td>
-            <td>{{ '✅' if s.is_valid_completion else '⚠️' }}</td>
-        </tr>
-        {% endfor %}
-    </table>
+    <div class="responsive-scroll progress-history-scroll" data-testid="progress-history-scroll">
+        <table>
+            <tr>
+                <th>Cycle</th>
+                <th>完成日期</th>
+                <th>素材</th>
+                <th>语法A</th>
+                <th>语法B</th>
+                <th>成绩</th>
+                <th>新增薄弱项</th>
+                <th>再命中</th>
+                <th>有效完成</th>
+            </tr>
+            {% for s in historical_summaries %}
+            <tr>
+                <td>#{{ s.id }}</td>
+                <td>{{ s.completed_at }}</td>
+                <td style="max-width: 150px; overflow: hidden; text-overflow: ellipsis;">{{ s.materials }}</td>
+                <td>{{ s.grammar_a }}</td>
+                <td>{{ s.grammar_b }}</td>
+                <td>{% if s.has_hearts %}<strong>{{ s.score_display }}</strong>{% else %}<span style="color: #7f8c8d;">{{ s.score_display }}</span>{% endif %}</td>
+                <td>{{ s.new_wp }}{% if s.is_legacy_stats %}<br><small style="color: #999;">无完整统计</small>{% endif %}</td>
+                <td>{{ s.re_hit_wp }}{% if s.is_legacy_stats %}<br><small style="color: #999;">无完整统计</small>{% endif %}</td>
+                <td>{{ '✅' if s.is_valid_completion else '⚠️' }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
 </div>
 {% endif %}
 
 <!-- Mermaid initialization -->
 <script src="/static/vendor/mermaid.min.js"></script>
 <script>
-    mermaid.initialize({ startOnLoad: true, securityLevel: 'strict' });
+    mermaid.initialize({
+        startOnLoad: true,
+        securityLevel: 'strict',
+        flowchart: { htmlLabels: false }
+    });
 </script>
 
 {% endblock %}

@@ -150,6 +150,16 @@ def test_materials_page_still_has_upload_button(client, db, populated_material):
     # The upload link should be present on the page
     assert 'show_upload=1' in resp.text or '上传并提取' in resp.text
 
+def test_base_template_keeps_viewport_and_mobile_css_contract(client):
+    """Base template still exposes viewport and shared mobile utilities."""
+    resp = client.get("/materials")
+    assert resp.status_code == 200
+    html = resp.text
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1.0">' in html
+    assert ".responsive-scroll {" in html
+    assert ".mobile-stack {" in html
+    assert "@media (max-width: 640px)" in html
+
 # ===========================================================================
 # Phase 4C: Progress page — read-only behavior
 # ===========================================================================
@@ -191,9 +201,23 @@ def test_current_cycle_renders_mermaid(client, db, populated_material, mock_deep
     resp = client.get("/study/progress")
     assert resp.status_code == 200
     # Should have the mermaid container
-    assert 'class="mermaid"' in resp.text
+    assert 'class="mermaid ' in resp.text or 'class="mermaid"' in resp.text
     # Should show current cycle info
     assert "当前进度" in resp.text
+
+def test_progress_page_uses_mobile_safe_mermaid_init_and_wrapper(
+    client, db, populated_material, mock_deepseek
+):
+    """Progress page keeps local vendor + strict mode and disables htmlLabels."""
+    client.post("/study/start_cycle", data={"material_id": populated_material.id},
+                follow_redirects=False)
+    resp = client.get("/study/progress")
+    assert resp.status_code == 200
+    html = resp.text
+    assert '/static/vendor/mermaid.min.js' in html
+    assert "securityLevel: 'strict'" in html
+    assert "htmlLabels: false" in html
+    assert 'mermaid-scroll-wrapper' in html
 
 def test_mermaid_includes_all_nodes(client, db, populated_material, mock_deepseek):
     """Mermaid diagram includes all required nodes."""
@@ -270,6 +294,22 @@ def test_historical_cycle_shows_score(client, db, populated_material, mock_deeps
     resp = client.get("/study/progress")
     # Historical completed cycles section should appear
     assert "历史完成记录" in resp.text
+
+def test_progress_history_uses_responsive_scroll_wrapper(client, db, populated_material):
+    """Historical summary table is wrapped in a mobile-safe scroll container."""
+    gp = db.query(GrammarPoint).first()
+    cycle = StudyCycle(
+        grammar_a_id=gp.id,
+        grammar_b_id=gp.id,
+        started_at=datetime.datetime(2025, 1, 1),
+        completed_at=datetime.datetime(2025, 1, 1, 1, 0),
+    )
+    db.add(cycle); db.commit(); db.refresh(cycle)
+    cm = CycleMaterial(cycle_id=cycle.id, material_id=populated_material.id)
+    db.add(cm); db.commit()
+    resp = client.get("/study/progress")
+    assert resp.status_code == 200
+    assert 'progress-history-scroll' in resp.text
 
 def test_pre_phase4a_cycle_legacy_label(client, db, populated_material):
     """Pre-Phase-4A cycle shows legacy label, not fabricated heart score."""
@@ -566,5 +606,3 @@ def test_mermaid_special_chars_escaped_in_labels(client, db, populated_material,
     html = resp.text
     # Verify no active script injection — the malicious payload shouldn't appear in raw HTML
     assert "alert(1)" not in html
-
-

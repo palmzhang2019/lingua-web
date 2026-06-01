@@ -8,12 +8,12 @@
 </div>
 {% endif %}
 
-<nav style="margin: 1rem 0;">
+<nav class="action-row" style="margin: 1rem 0;">
     <a href="/materials">← 返回素材列表</a>
 </nav>
 
-<h1>📄 {{ material.filename }}</h1>
-<div class="meta">
+<h1 class="break-long">📄 {{ material.filename }}</h1>
+<div class="meta break-long">
     类型: {{ material.source_type|upper }}
     | 语言: {{ material.language_code|upper }}
     | 上传时间: {{ material.uploaded_at.strftime('%Y-%m-%d %H:%M:%S') if material.uploaded_at else '' }}

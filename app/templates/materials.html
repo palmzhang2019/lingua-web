@@ -54,7 +54,7 @@ function validateFileSize(input) {
     <p style="color: #555; font-size: 0.9rem;">
         ✅ 勾选多个素材后，可选择组合学习或删除素材。
     </p>
-    <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+    <div class="action-row mobile-stack">
         <button type="submit" formaction="/study/start_cycle" class="btn btn-primary" style="background: #8e44ad;"
                 onclick="return validateMultiStart()">
             📚 使用所选素材开始学习
@@ -96,15 +96,15 @@ function updateMultiCount() {
 {% set m = item.material %}
 {% set gp_count = item.grammar_count %}
 <div class="card">
-    <div style="display: flex; justify-content: space-between; align-items: center;">
-        <div style="display: flex; align-items: center; gap: 0.75rem;">
+    <div class="split-row mobile-stack">
+        <div class="split-row-main action-row" style="align-items: center;">
             <!-- Multi-select checkbox -->
             <input type="checkbox" name="material_ids" value="{{ m.id }}"
                    form="action-form"
                    onchange="updateMultiCount()"
                    style="transform: scale(1.2);">
-            <div>
-                <a href="/materials/{{ m.id }}" style="text-decoration:none; color:inherit;">
+            <div class="break-long">
+                <a href="/materials/{{ m.id }}" class="break-long" style="text-decoration:none; color:inherit;">
                     <strong>{{ m.filename }}</strong>
                 </a>
                 <span class="tag tag-{{ m.source_type }}">{{ m.source_type|upper }}</span>
@@ -121,9 +121,9 @@ function updateMultiCount() {
                 </div>
             </div>
         </div>
-        <div>
+        <div class="split-row-side">
             {% if gp_count >= 2 %}
-            <form action="/study/start_cycle" method="post" style="display:inline;">
+            <form action="/study/start_cycle" method="post">
                 <input type="hidden" name="material_id" value="{{ m.id }}">
                 <button type="submit" class="btn btn-primary" style="background: #27ae60;">开始学习</button>
             </form>
