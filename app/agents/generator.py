@@ -283,8 +283,12 @@ def generate_one_multiple_choice(
     grammar_b: GrammarPoint,
     review_points: list[GrammarPoint],
     slot_index: int,  # 0-based within MC module (0-8)
-) -> MultipleChoiceQuestion | None:
+) -> tuple[MultipleChoiceQuestion | None, str | None]:
     """Generate exactly 1 multiple-choice question for a specific slot.
+
+    Returns (question, error_code) tuple.
+    On success: (MultipleChoiceQuestion, None)
+    On failure: (None, sanitized_error_code)
 
     slot_index mapping (must match start_cycle):
       0-1 → grammar_a_distinction
@@ -293,7 +297,7 @@ def generate_one_multiple_choice(
     """
     if not is_available():
         print("[generator] LLM not available — skipping single MC generation")
-        return None
+        return None, "MC_LLM_UNAVAILABLE"
 
     if slot_index < 2:
         role = "grammar_a_distinction"
@@ -347,7 +351,7 @@ def generate_one_multiple_choice(
     )
     if result is None:
         print(f"[generator] Single MC generation failed (slot {slot_index})")
-        return None
+        return None, "MC_API_OR_PARSE_FAILURE"
 
     from app.schemas import MultipleChoiceQuestion as MCQ
 
@@ -357,7 +361,7 @@ def generate_one_multiple_choice(
         expected=result.expected,
         grammar_point=result.grammar_point or (target.point_name if target else ""),
         question_role=role,
-    )
+    ), None
 
 
 def _single_mc_system_prompt() -> str:

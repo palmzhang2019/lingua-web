@@ -61,6 +61,9 @@ startGeneration();
     </div>
     <div id="mc-failure-state" style="text-align: center; padding: 2rem;">
         <p style="font-size: 1.1rem; color: #e74c3c;">选择题生成失败，请重试。</p>
+        {% if mc_error_code %}
+        <p id="mc-diagnostic-code" style="font-size: 0.85rem; color: #999; margin-top: 0.5rem;">诊断代码：{{ mc_error_code }}</p>
+        {% endif %}
         <button id="mc-retry-btn" class="btn btn-primary" onclick="startMcRetry()">重新生成</button>
     </div>
     <div id="mc-retrying-state" style="text-align: center; padding: 2rem; display: none;">
@@ -85,6 +88,14 @@ function startMcRetry() {
                 if (retryingEl) retryingEl.style.display = 'none';
                 if (failEl) failEl.style.display = 'block';
                 if (retryBtn) retryBtn.disabled = false;
+                // Show sanitized diagnostic code if available
+                if (d.error_code) {
+                    var diagEl = document.getElementById('mc-diagnostic-code');
+                    if (diagEl) {
+                        diagEl.textContent = '诊断代码：' + d.error_code;
+                        diagEl.style.display = 'block';
+                    }
+                }
             }
         })
         .catch(function() {

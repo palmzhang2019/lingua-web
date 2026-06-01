@@ -428,15 +428,20 @@ def _generate_slot_content(
         result = generate_one_multiple_choice(
             grammar_a, grammar_b, review_points, slot_idx
         )
-        if result is None:
+        # Backwards-compatible: accept both (result, error_code) tuple and scalar result
+        if isinstance(result, tuple):
+            mc_result, error_code = result
+        else:
+            mc_result, error_code = result, None
+        if mc_result is None:
             slot.status = "generation_failed"
-            slot.generation_error = "Failed to generate multiple-choice question"
+            slot.generation_error = error_code or "Failed to generate multiple-choice question"
             db.commit()
             return False
 
-        mc_name = _normalize_grammar_name(result.grammar_point)
+        mc_name = _normalize_grammar_name(mc_result.grammar_point)
         mnames_clean = {_normalize_grammar_name(n) for n in globally_mastered_names}
-        texts = [result.prompt, result.A, result.B, result.C, result.D]
+        texts = [mc_result.prompt, mc_result.A, mc_result.B, mc_result.C, mc_result.D]
         contaminated = any(
             mname in " ".join(texts).lower()
             for mname in mnames_clean if mname
@@ -444,20 +449,20 @@ def _generate_slot_content(
         )
         if contaminated:
             slot.status = "generation_failed"
-            slot.generation_error = "Generated content contains mastered grammar"
+            slot.generation_error = "MC_MASTERED_GRAMMAR_CONTAMINATION"
             db.commit()
             return False
 
         qp = QuestionPayload(
             type="multiple_choice",
-            choices={"A": result.A, "B": result.B, "C": result.C, "D": result.D},
-            prompt=result.prompt,
-            expected=result.expected,
-            grammar_point=result.grammar_point,
-            question_role=result.question_role,
+            choices={"A": mc_result.A, "B": mc_result.B, "C": mc_result.C, "D": mc_result.D},
+            prompt=mc_result.prompt,
+            expected=mc_result.expected,
+            grammar_point=mc_result.grammar_point,
+            question_role=mc_result.question_role,
         ).model_dump()
         slot.question_payload_json = qp
-        slot.correct_answer = result.expected
+        slot.correct_answer = mc_result.expected
         slot.status = "pending"
         db.commit()
 
@@ -869,6 +874,7 @@ async def current_question(
             {
                 "mc_retry": True,
                 "mc_failed": True,
+                "mc_error_code": current_q.generation_error or "",
                 "module_name": MODULE_LABELS.get(state.current_module, ""),
                 "question": {
                     "index": state.current_question_index + 1,
@@ -1953,7 +1959,10 @@ async def regenerate_current_mc(
 
     # _generate_slot_content transitions to pending (ok) or generation_failed (fail)
     success = _generate_slot_content(db, current_q, ga, gb, review_points, globally_mastered_names)
-    return {"ok": success}
+    if success:
+        return {"ok": True}
+    else:
+        return {"ok": False, "error_code": current_q.generation_error or "MC_UNKNOWN_GENERATION_FAILURE"}
 
 
 @router.post("/candidate/{candidate_id}/add")
