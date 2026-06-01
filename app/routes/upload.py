@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Material, GrammarPoint, VocabItem, CycleMaterial
+from app.models import Material, GrammarPoint, VocabItem, CycleMaterial, StudyCycle
 from app.agents.extractor import extract_grammar_points, extract_vocab
 from app.services.material_parser import (
     parse_uploaded_material,
@@ -352,11 +352,25 @@ async def delete_selected_materials(
             continue
 
         # Check if this material is referenced by any study cycle
+        # (via cycle_materials OR via its grammar points being used as A/B)
         cm_count = db.query(CycleMaterial).filter(
             CycleMaterial.material_id == mid
         ).count()
 
-        if cm_count == 0:
+        gp_ids = [
+            row[0] for row in db.query(GrammarPoint.id).filter(
+                GrammarPoint.material_id == mid
+            ).all()
+        ]
+        cycle_gp_count = 0
+        if gp_ids:
+            cycle_gp_count = db.query(StudyCycle).filter(
+                StudyCycle.grammar_a_id.in_(gp_ids)
+            ).count() + db.query(StudyCycle).filter(
+                StudyCycle.grammar_b_id.in_(gp_ids)
+            ).count()
+
+        if cm_count == 0 and cycle_gp_count == 0:
             # Unused material: hard delete
             db.query(GrammarPoint).filter(
                 GrammarPoint.material_id == mid

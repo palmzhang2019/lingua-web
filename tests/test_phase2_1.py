@@ -222,3 +222,65 @@ def test_mastery_from_archived_still_excludes(client, db, used_material):
         "Unmastered grammar must remain eligible"
     assert "〜がち" in mastered or any("がち" in n for n in mastered), \
         "Mastered name must be in global mastered set"
+
+
+def test_legacy_gp_cycle_reference_forces_archive(client, db):
+    """Grammar point used as cycle A/B forces archive even without cycle_materials."""
+    m = Material(filename="legacy.txt", content_text="Legacy ref.",
+                 source_type="txt")
+    db.add(m); db.commit(); db.refresh(m)
+    gp = GrammarPoint(material_id=m.id, point_name="〜てはいられない",
+                      explanation_jp="X", example_from_material="x",
+                      difficulty_level="N2", mastered=False)
+    db.add(gp); db.commit()
+
+    # Create a cycle referencing this gp, WITHOUT a cycle_materials row
+    c = StudyCycle(started_at=datetime.datetime.utcnow(),
+                   grammar_a_id=gp.id, grammar_b_id=gp.id,
+                   is_valid_completion=False)
+    db.add(c); db.commit()
+
+    # Delete — must archive because gp is referenced by cycle
+    resp = client.post("/materials/delete_selected",
+                       data={"material_ids": [m.id]})
+    assert resp.status_code == 200
+
+    db.refresh(m)
+    assert m.archived_at is not None, \
+        "Material must be archived when its GP is referenced by a cycle"
+    # GP must still exist
+    gp_check = db.query(GrammarPoint).filter(GrammarPoint.id == gp.id).first()
+    assert gp_check is not None, "Grammar point referenced by cycle must survive"
+
+
+def test_deleted_unused_mistaken_material_does_not_leave_mastery_side_effect(
+    client, db
+):
+    """Hard-deleted mistaken source mastery does not persist in global set."""
+    m = Material(filename="mistake.txt", content_text="Wrong upload.",
+                 source_type="txt")
+    db.add(m); db.commit(); db.refresh(m)
+    gp = GrammarPoint(material_id=m.id, point_name="〜てはいられない",
+                      explanation_jp="X", example_from_material="x",
+                      difficulty_level="N2", mastered=True)
+    db.add(gp); db.commit()
+
+    client.post("/materials/delete_selected",
+                data={"material_ids": [m.id]})
+    assert db.query(Material).filter(Material.id == m.id).first() is None
+
+    m2 = Material(filename="fresh.txt", content_text="Fresh.", source_type="txt")
+    db.add(m2); db.commit(); db.refresh(m2)
+    gp2 = GrammarPoint(material_id=m2.id, point_name="〜てはいられない",
+                       explanation_jp="Y", example_from_material="y",
+                       difficulty_level="N2", mastered=False)
+    gp3 = GrammarPoint(material_id=m2.id, point_name="〜たきり",
+                       explanation_jp="Z", example_from_material="z",
+                       difficulty_level="N2", mastered=False)
+    db.add_all([gp2, gp3]); db.commit()
+
+    from app.routes.study import _build_combined_grammar_pool
+    candidates, mastered = _build_combined_grammar_pool(db, [m2.id])
+    candidate_names = {g.point_name for g in candidates}
+    assert "〜てはいられない" in candidate_names, \
+        "Mastery from hard-deleted mistaken material must not persist"
