@@ -46,15 +46,21 @@ function togglePageRange() {
 
 {% if materials %}
 <!-- Multi-material selection: batch start form -->
-<form id="multi-start-form" action="/study/start_cycle" method="post" style="margin-bottom: 1rem;">
+<form id="action-form" method="post" style="margin-bottom: 1rem;">
     <p style="color: #555; font-size: 0.9rem;">
-        ✅ 勾选多个素材后点击下方按钮，可组合学习。本次组合仅服务于当前学习循环，不会合并原始素材。
+        ✅ 勾选多个素材后，可选择组合学习或删除素材。
     </p>
-    <button type="submit" class="btn btn-primary" style="background: #8e44ad;"
-            onclick="return validateMultiStart()">
-        📚 使用所选素材开始学习
-    </button>
-    <span id="multi-count" style="margin-left: 0.5rem; color: #7f8c8d; font-size: 0.9rem;"></span>
+    <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+        <button type="submit" formaction="/study/start_cycle" class="btn btn-primary" style="background: #8e44ad;"
+                onclick="return validateMultiStart()">
+            📚 使用所选素材开始学习
+        </button>
+        <button type="submit" formaction="/materials/delete_selected" class="btn btn-primary" style="background: #c0392b;"
+                onclick="return confirmDelete()">
+            🗑️ 删除所选素材
+        </button>
+        <span id="multi-count" style="margin-left: 0.5rem; color: #7f8c8d; font-size: 0.9rem;"></span>
+    </div>
 </form>
 
 <script>
@@ -65,6 +71,14 @@ function validateMultiStart() {
         return false;
     }
     return true;
+}
+function confirmDelete() {
+    const checks = document.querySelectorAll('input[name="material_ids"]:checked');
+    if (checks.length === 0) {
+        alert('请至少选择一份需要删除的素材。');
+        return false;
+    }
+    return confirm('确定删除所选素材吗？未开始学习的素材将被删除；已有关联学习记录的素材将从列表中隐藏，但学习历史记录会被保留。');
 }
 function updateMultiCount() {
     const checks = document.querySelectorAll('input[name="material_ids"]:checked');
@@ -82,7 +96,7 @@ function updateMultiCount() {
         <div style="display: flex; align-items: center; gap: 0.75rem;">
             <!-- Multi-select checkbox -->
             <input type="checkbox" name="material_ids" value="{{ m.id }}"
-                   form="multi-start-form"
+                   form="action-form"
                    onchange="updateMultiCount()"
                    style="transform: scale(1.2);">
             <div>

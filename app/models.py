@@ -28,6 +28,7 @@ class Material(Base):
     source_type = Column(String(20), nullable=False, default="txt")  # txt | md | pdf
     language_code = Column(String(10), nullable=False, default="ja")
     uploaded_at = Column(DateTime, default=datetime.datetime.utcnow)
+    archived_at = Column(DateTime, nullable=True)  # null=active, set=removed from active library
     # PDF page grounding (nullable for TXT/MD)
     source_page_start = Column(Integer, nullable=True)
     source_page_end = Column(Integer, nullable=True)

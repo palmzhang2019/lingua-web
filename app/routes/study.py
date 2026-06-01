@@ -317,7 +317,6 @@ def _build_combined_grammar_pool(
     all_mastered_gp = (
         db.query(GrammarPoint)
         .filter(GrammarPoint.mastered == True)
-        .filter(GrammarPoint.material_id.in_(material_ids))
         .all()
     )
     globally_mastered_names: set[str] = set()
@@ -403,6 +402,22 @@ async def start_cycle(
     )
     if len(materials) != len(sorted_ids):
         return HTMLResponse("One or more materials not found", status_code=404)
+
+    # Reject archived materials
+    archived_ids = [m.id for m in materials if m.archived_at is not None]
+    if archived_ids:
+        return templates.TemplateResponse(
+            request, "base.html",
+            {
+                "content": (
+                    "<div class='card flash-error'>"
+                    "<strong>无法开始学习：</strong>选中的素材包含已被删除或隐藏的素材，"
+                    "无法用于新的学习循环。</div>"
+                    "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
+                )
+            },
+            status_code=400,
+        )
 
     # ---- Build combined eligible grammar pool --------------------------------
     eligible_candidates, globally_mastered_names = _build_combined_grammar_pool(db, sorted_ids)

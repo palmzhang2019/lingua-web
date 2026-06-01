@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Material, GrammarPoint, VocabItem
+from app.models import Material, GrammarPoint, VocabItem, CycleMaterial
 from app.agents.extractor import extract_grammar_points, extract_vocab
 from app.services.material_parser import (
     parse_uploaded_material,
@@ -30,8 +30,10 @@ ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf"}
 async def list_materials(request: Request, db: Session = Depends(get_db)):
     """Display uploaded materials list with extraction status."""
     materials = db.query(Material).order_by(Material.uploaded_at.desc()).all()
+    # Exclude archived materials from the active list
+    active_materials = [m for m in materials if m.archived_at is None]
     material_list = []
-    for m in materials:
+    for m in active_materials:
         gp_count = db.query(GrammarPoint).filter(GrammarPoint.material_id == m.id).count()
         material_list.append({"material": m, "grammar_count": gp_count})
     return templates.TemplateResponse(
@@ -316,3 +318,81 @@ async def toggle_vocab_mastered(
         )
 
     return RedirectResponse(url=f"/materials/{material_id}", status_code=303)
+
+
+# =============================================================================
+# POST /materials/delete_selected — delete or archive selected materials
+# =============================================================================
+
+@router.post("/delete_selected")
+async def delete_selected_materials(
+    request: Request,
+    material_ids: list[int] = Form([]),
+    db: Session = Depends(get_db),
+):
+    """Delete or archive selected materials.
+
+    Unused materials (no cycle_materials relation) are hard-deleted.
+    Used materials are soft-deleted (archived_at set) to preserve history.
+    """
+    deduped_ids = sorted(set(mid for mid in material_ids if mid > 0))
+    if not deduped_ids:
+        return HTMLResponse(
+            "请至少选择一份需要删除的素材。", status_code=400
+        )
+
+    hard_deleted = 0
+    archived = 0
+
+    for mid in deduped_ids:
+        material = db.query(Material).filter(
+            Material.id == mid, Material.archived_at.is_(None)
+        ).first()
+        if not material:
+            continue
+
+        # Check if this material is referenced by any study cycle
+        cm_count = db.query(CycleMaterial).filter(
+            CycleMaterial.material_id == mid
+        ).count()
+
+        if cm_count == 0:
+            # Unused material: hard delete
+            db.query(GrammarPoint).filter(
+                GrammarPoint.material_id == mid
+            ).delete()
+            db.query(VocabItem).filter(
+                VocabItem.material_id == mid
+            ).delete()
+            db.delete(material)
+            hard_deleted += 1
+        else:
+            # Used material: archive (set archived_at)
+            material.archived_at = datetime.datetime.utcnow()
+            archived += 1
+
+    db.commit()
+
+    # Build result message
+    if hard_deleted > 0 and archived > 0:
+        msg = (
+            f"已删除 {hard_deleted} 份未使用素材；"
+            f"{archived} 份已有学习记录的素材已从列表隐藏并保留历史。"
+        )
+    elif hard_deleted > 0:
+        msg = f"已删除 {hard_deleted} 份素材。"
+    elif archived > 0:
+        msg = "所选素材已有学习记录，已从素材库隐藏并保留历史。"
+    else:
+        msg = "没有需要处理的素材。"
+
+    return templates.TemplateResponse(
+        request, "base.html",
+        {
+            "content": (
+                f"<div class='card flash' style='background:#d4edda;color:#155724;'>"
+                f"{msg}</div>"
+                "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
+            )
+        },
+    )
