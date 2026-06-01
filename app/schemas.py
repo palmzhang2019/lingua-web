@@ -82,7 +82,7 @@ class MultipleChoiceQuestion(BaseModel):
     C: str = Field(description="Option C")
     D: str = Field(description="Option D")
     expected: str = Field(description="Correct answer (A/B/C/D) — server-side only")
-    grammar_point: str = Field(description="Which grammar point this question tests")
+    grammar_point: str = Field(default="", description="Which grammar point this question tests")
     question_role: str = Field(
         description="One of: grammar_a_distinction, grammar_b_distinction, review"
     )

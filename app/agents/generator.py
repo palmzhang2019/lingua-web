@@ -206,7 +206,7 @@ def generate_multiple_choice(
         print("[generator] MC generation failed")
         return []
 
-    # Fix question_role attribution
+    # Fix question_role attribution and ensure grammar_point is set
     for i, q in enumerate(result.questions):
         if i < 2:
             q.question_role = "grammar_a_distinction"
@@ -216,7 +216,10 @@ def generate_multiple_choice(
             q.grammar_point = grammar_b.point_name
         else:
             q.question_role = "review"
-            # Keep the grammar_point as set by LLM or default to review
+            if not q.grammar_point:
+                # LLM may omit grammar_point for review questions —
+                # fall back to the first review point name
+                q.grammar_point = review_points[0].point_name if review_points else "review"
 
     print(f"[generator] Generated {len(result.questions)} MC questions")
     return result.questions[:9]

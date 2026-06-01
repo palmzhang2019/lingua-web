@@ -11,6 +11,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     JSON,
+    UniqueConstraint,
 )
 
 from app.db import Base
@@ -132,3 +133,18 @@ class UsageLog(Base):
     completion_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
     called_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class CycleMaterial(Base):
+    """Many-to-many association between study cycles and materials."""
+
+    __tablename__ = "cycle_materials"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cycle_id = Column(Integer, ForeignKey("study_cycles.id"), nullable=False)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
+
+    # Each material can appear only once per cycle
+    __table_args__ = (
+        UniqueConstraint("cycle_id", "material_id", name="uq_cycle_material"),
+    )

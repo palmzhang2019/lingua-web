@@ -29,6 +29,7 @@ Lingua Web 是一个自用日语学习 Web 原型，用三天时间完成了从�
 ### 当前已实现功能
 
 - **材料上传与提取** — 上传 TXT/Markdown/PDF 日语材料。TXT/MD 通过 DeepSeek 提取语法点（含级别标注和原文示例）和词汇；PDF 通过 OpenAI gpt‑5.4‑mini 视觉理解提取，**仅发送用户指定的页码范围**，不超过 10 页，文件上限 10 MB。提取的语法/词汇可标记为「已掌握」，后续循环自动跳过。
+- **多素材组合学习** — 可在素材列表中勾选多个已有素材，启动一次学习循环。循环仅服务于本次学习，不会合并原始素材。语法点去重后适用已掌握过滤和弱项优先排序，每个语法点保留其原始素材和 PDF 页码来源。
 - **引导式学习循环** — 从已提取的**未掌握**语法点中优先选择 N2 级别的两个作为语法 A 和 B，并行生成语法解释、10 道翻译题（A/B 各 5 道）和 9 道选择题（4 道辨析 + 5 道复习），共 19 道题
 - **智能评分** — 翻译题由 DeepSeek 进行结构化语义评估（判断是否使用目标语法、语义是否可接受），选择题由 Python 进行确定性判定
 - **薄弱项追踪** — 自动记录每道**实际作答**的错题（跳过或已学过的题不记录）对应的语法薄弱项；同一语法点答错 2 次后自动激活；后续循环的复习题优先使用活跃薄弱项
@@ -238,6 +239,7 @@ Upload a TXT, Markdown, or PDF Japanese learning text (scanned PDFs are handled 
 ### Implemented Features
 
 - **Material Ingestion** — Upload TXT, Markdown, or PDF files. PDFs with embedded text use direct extraction; scanned/image-only PDFs fall back to OCR (tesseract). Persist the raw text. Extract grammar points (with JLPT level tags and source‑material examples) and vocabulary via DeepSeek, but only persist items whose example excerpts are confirmed to appear in the uploaded text.
+- **Multi-Material Study** — Select multiple materials from the list to start one combined study cycle. The combination is scoped to the current cycle and does not merge source texts. Grammar candidates are deduplicated by normalized name with cross-material mastered exclusion and weak-point priority. Each grammar retains its original material and PDF page provenance.
 - **Guided Study Cycle** — Deterministically pick two N2‑preferred grammar points. Generate explanations, 10 translation exercises (5 per grammar point), and 9 multiple‑choice questions (4 distinction + 5 review) — 19 questions in total.
 - **Intelligent Grading** — Translation answers are evaluated by DeepSeek for semantic acceptability and target‑grammar usage. Multiple‑choice answers are graded by deterministic Python comparison — no LLM overhead.
 - **Weak Point Tracking** — Only records weak‑point entries for questions the user actually **answered and got wrong** (skipped and studied questions are excluded). A grammar point becomes active after 2 errors; review questions prioritize active weak points.

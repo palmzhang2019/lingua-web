@@ -13,6 +13,7 @@ from app.models import (
     Material,
     GrammarPoint,
     StudyCycle,
+    CycleMaterial,
     QuestionAttempt,
     SessionState,
     WeakPoint,
@@ -280,6 +281,65 @@ def _validate_mc_against_mastered(
     return results
 
 
+def _normalize_grammar_name(name: str) -> str:
+    """Normalize a grammar expression for cross-material comparison.
+
+    Strips whitespace and leading ``〜``, lowercases.
+    Returns a clean key for deduplication and mastered-exclusion lookups.
+    """
+    return name.lower().strip().lstrip("〜")
+
+
+def _build_combined_grammar_pool(
+    db: Session, material_ids: list[int]
+) -> tuple[list[GrammarPoint], set[str]]:
+    """Build a unified eligible grammar pool from multiple materials.
+
+    Returns (eligible_candidates, globally_mastered_names) where:
+    - eligible_candidates: GrammarPoint rows suitable for A/B/review selection,
+      deduplicated by normalized name. The first-occurring row (by id) is the
+      representative for each unique grammar expression.
+    - globally_mastered_names: normalized names of ALL mastered grammar
+      expressions across ALL materials (cross-material scope).
+    """
+    if not material_ids:
+        return [], set()
+
+    # ---- Step 1: Collect all grammar and mastered info from selected materials ----
+    raw_points = (
+        db.query(GrammarPoint)
+        .filter(GrammarPoint.material_id.in_(material_ids))
+        .order_by(GrammarPoint.id)  # deterministic: first by id
+        .all()
+    )
+
+    # ---- Step 2: Build the global mastered set from ALL materials ----
+    all_mastered_gp = (
+        db.query(GrammarPoint)
+        .filter(GrammarPoint.mastered == True)
+        .filter(GrammarPoint.material_id.in_(material_ids))
+        .all()
+    )
+    globally_mastered_names: set[str] = set()
+    for gp in all_mastered_gp:
+        globally_mastered_names.add(_normalize_grammar_name(gp.point_name))
+
+    # ---- Step 3: Deduplicate by normalized name, exclude mastered ----
+    seen: set[str] = set()
+    eligible: list[GrammarPoint] = []
+    for gp in raw_points:
+        key = _normalize_grammar_name(gp.point_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        if key in globally_mastered_names:
+            # Not eligible — exclude (even if this particular row has mastered=False)
+            continue
+        eligible.append(gp)
+
+    return eligible, globally_mastered_names
+
+
 def _build_answer_feedback_html(
     is_correct: bool, expected: str, user_answer: str, explanation: str | None = None
 ) -> str:
@@ -305,42 +365,64 @@ def _build_answer_feedback_html(
 @router.post("/start_cycle")
 async def start_cycle(
     request: Request,
-    material_id: int = Form(...),
+    material_id: int = Form(None),
+    material_ids: list[int] = Form([]),
     db: Session = Depends(get_db),
 ):
-    """Start a new study cycle for the given material."""
-    material = db.query(Material).filter(Material.id == material_id).first()
-    if not material:
-        return HTMLResponse("Material not found", status_code=404)
+    """Start a new study cycle from one or more materials.
 
-    # Load grammar points ordered by id (prefer N2 first)
-    grammar_points = (
-        db.query(GrammarPoint)
-        .filter(GrammarPoint.material_id == material_id)
-        .order_by(GrammarPoint.id)
+    Legacy single-material callers can use ``material_id``.
+    Multi-material callers pass ``material_ids`` as repeated form values.
+    """
+    # ---- Normalise input: combine single + multi into a deduplicated list ----
+    ids: set[int] = set()
+    if material_id is not None:
+        ids.add(material_id)
+    for mid in material_ids:
+        if mid > 0:
+            ids.add(mid)
+    sorted_ids = sorted(ids)
+    if not sorted_ids:
+        return templates.TemplateResponse(
+            request, "base.html",
+            {
+                "content": (
+                    "<div class='card flash-error'>"
+                    "<strong>无法开始学习：</strong>请至少选择一份素材后再开始学习。</div>"
+                    "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
+                )
+            },
+            status_code=400,
+        )
+
+    # ---- Verify every selected material exists ----
+    materials = (
+        db.query(Material)
+        .filter(Material.id.in_(sorted_ids))
         .all()
     )
+    if len(materials) != len(sorted_ids):
+        return HTMLResponse("One or more materials not found", status_code=404)
 
-    # Filter out user-marked-as-mastered grammar points
-    unmastered = [gp for gp in grammar_points if not gp.mastered]
+    # ---- Build combined eligible grammar pool --------------------------------
+    eligible_candidates, globally_mastered_names = _build_combined_grammar_pool(db, sorted_ids)
 
-    if len(unmastered) < 2:
-        total = len(grammar_points)
-        mastered_count = total - len(unmastered)
-        if len(unmastered) == 1:
+    if len(eligible_candidates) < 2:
+        total_gp = db.query(GrammarPoint).filter(
+            GrammarPoint.material_id.in_(sorted_ids)
+        ).count()
+        if len(eligible_candidates) == 1:
             msg = (
                 "<div class='card flash-error'>"
-                "<strong>无法开始学习：</strong>该素材需要至少 2 个未掌握的语法点才能开始学习。"
-                f"共 {total} 个语法点，已掌握 {mastered_count} 个，"
-                f"仅剩 1 个，仍需至少 2 个。</div>"
+                "<strong>无法开始学习：</strong>所选素材需要至少 2 个未掌握的语法点才能开始学习。"
+                f"共 {total_gp} 个语法点，仅剩 1 个未掌握，仍需至少 2 个。</div>"
                 "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
             )
         else:
             msg = (
                 "<div class='card flash-error'>"
-                "<strong>无法开始学习：</strong>该素材需要至少 2 个未掌握的语法点。"
-                f"共 {total} 个语法点，已掌握 {mastered_count} 个。"
-                "请先上传更多素材。</div>"
+                "<strong>无法开始学习：</strong>所选素材中没有未掌握的可学习语法点。"
+                f"共 {total_gp} 个语法点，均已掌握。</div>"
                 "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
             )
         return templates.TemplateResponse(
@@ -349,36 +431,33 @@ async def start_cycle(
             status_code=400,
         )
 
-    # Select grammar A and B from unmastered points deterministically
-    n2_points = [gp for gp in unmastered if gp.difficulty_level == "N2"]
+    # ---- Select grammar A and B from eligible pool deterministically ---------
+    n2_points = [gp for gp in eligible_candidates if gp.difficulty_level == "N2"]
     if len(n2_points) >= 2:
         grammar_a = n2_points[0]
         grammar_b = n2_points[1]
     else:
-        grammar_a = grammar_points[0]
-        grammar_b = grammar_points[1]
+        grammar_a = eligible_candidates[0]
+        grammar_b = eligible_candidates[1]
 
-    # Remaining points for review questions
+    # ---- Remaining eligible points for review --------------------------------
     review_points = [
-        gp for gp in unmastered
+        gp for gp in eligible_candidates
         if gp.id not in (grammar_a.id, grammar_b.id)
     ]
 
-    # --- Day 3: Prioritize active weak points for review questions ---
+    # ---- Prioritize active weak points (but only from the surviving pool) ----
     active_weak_points = (
         db.query(WeakPoint)
         .filter(WeakPoint.point_type == "grammar", WeakPoint.is_active == True)
         .all()
     )
     weak_point_names = {wp.point_reference for wp in active_weak_points}
-    # Move active weak-point grammar points to the front of review_points
     weak_review = [gp for gp in review_points if gp.point_name in weak_point_names]
     other_review = [gp for gp in review_points if gp.point_name not in weak_point_names]
     prioritized_review = weak_review + other_review
-    # If we have more than enough for 5 review slots, prefer weak ones
-    # The LLM will use what it needs from the list
 
-    # ---------- Parallel generation: 5 independent DeepSeek calls ----------
+    # ---- Parallel generation: 5 independent DeepSeek calls ------------------
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
 
@@ -408,7 +487,7 @@ async def start_cycle(
             mc_future,
         )
 
-    # ---------- Validate results ----------
+    # ---- Validate results ---------------------------------------------------
     if not explanation_a or not explanation_b:
         return templates.TemplateResponse(
             request, "base.html",
@@ -451,17 +530,13 @@ async def start_cycle(
             status_code=500,
         )
 
-    # ---------- Post-generation: validate MC against mastered grammar ----------
-    mastered_names = {
-        gp.point_name for gp in grammar_points if gp.mastered
-    }
-    mc_valid = _validate_mc_against_mastered(mc_questions, mastered_names)
+    # ---- Post-generation: validate MC against globally mastered grammar ------
+    mc_valid = _validate_mc_against_mastered(mc_questions, globally_mastered_names)
     if not all(mc_valid):
-        # Retry once with explicit constraint
         constrained_prompt_extras = (
             "\n\nCRITICAL RULE: The following grammar expressions must NOT appear "
             "in ANY question prompt, choice, or distractor:\n"
-        ) + "\n".join(f"- {name}" for name in sorted(mastered_names))
+        ) + "\n".join(f"- {name}" for name in sorted(globally_mastered_names))
         from app.agents.generator import (
             generate_multiple_choice as retry_generate_mc,
         )
@@ -470,7 +545,7 @@ async def start_cycle(
         )
         if retry_mc and len(retry_mc) >= 9:
             mc_questions = retry_mc
-            mc_valid = _validate_mc_against_mastered(retry_mc, mastered_names)
+            mc_valid = _validate_mc_against_mastered(retry_mc, globally_mastered_names)
 
         if not all(mc_valid):
             return templates.TemplateResponse(
@@ -487,7 +562,7 @@ async def start_cycle(
                 status_code=500,
             )
 
-    # ---------- Create study cycle ----------
+    # ---- Create study cycle -------------------------------------------------
     cycle = StudyCycle(
         started_at=datetime.datetime.utcnow(),
         completed_at=None,
@@ -499,7 +574,12 @@ async def start_cycle(
     db.commit()
     db.refresh(cycle)
 
-    # ---------- Persist 19 question attempts with status="pending" ----------
+    # ---- Persist cycle_materials association rows ---------------------------
+    for mid in sorted_ids:
+        db.add(CycleMaterial(cycle_id=cycle.id, material_id=mid))
+    db.commit()
+
+    # ---- Persist 19 question attempts with status="pending" -----------------
     # Questions 1-5: Grammar A translation
     for ex in trans_a:
         payload = QuestionPayload(

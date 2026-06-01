@@ -45,11 +45,46 @@ function togglePageRange() {
 {% endif %}
 
 {% if materials %}
-    {% for item in materials %}
-    {% set m = item.material %}
-    {% set gp_count = item.grammar_count %}
-    <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
+<!-- Multi-material selection: batch start form -->
+<form id="multi-start-form" action="/study/start_cycle" method="post" style="margin-bottom: 1rem;">
+    <p style="color: #555; font-size: 0.9rem;">
+        ✅ 勾选多个素材后点击下方按钮，可组合学习。本次组合仅服务于当前学习循环，不会合并原始素材。
+    </p>
+    <button type="submit" class="btn btn-primary" style="background: #8e44ad;"
+            onclick="return validateMultiStart()">
+        📚 使用所选素材开始学习
+    </button>
+    <span id="multi-count" style="margin-left: 0.5rem; color: #7f8c8d; font-size: 0.9rem;"></span>
+</form>
+
+<script>
+function validateMultiStart() {
+    const checks = document.querySelectorAll('input[name="material_ids"]:checked');
+    if (checks.length === 0) {
+        alert('请至少勾选一份素材。');
+        return false;
+    }
+    return true;
+}
+function updateMultiCount() {
+    const checks = document.querySelectorAll('input[name="material_ids"]:checked');
+    document.getElementById('multi-count').textContent = checks.length > 0
+        ? '已选择 ' + checks.length + ' 份素材'
+        : '';
+}
+</script>
+
+{% for item in materials %}
+{% set m = item.material %}
+{% set gp_count = item.grammar_count %}
+<div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <!-- Multi-select checkbox -->
+            <input type="checkbox" name="material_ids" value="{{ m.id }}"
+                   form="multi-start-form"
+                   onchange="updateMultiCount()"
+                   style="transform: scale(1.2);">
             <div>
                 <a href="/materials/{{ m.id }}" style="text-decoration:none; color:inherit;">
                     <strong>{{ m.filename }}</strong>
@@ -67,19 +102,20 @@ function togglePageRange() {
                     {% endif %}
                 </div>
             </div>
-            <div>
-                {% if gp_count >= 2 %}
-                <form action="/study/start_cycle" method="post" style="display:inline;">
-                    <input type="hidden" name="material_id" value="{{ m.id }}">
-                    <button type="submit" class="btn btn-primary" style="background: #27ae60;">开始学习</button>
-                </form>
-                {% else %}
-                <span class="btn" style="background: #95a5a6; color: #fff; cursor: not-allowed;">需要至少 2 个语法点</span>
-                {% endif %}
-            </div>
+        </div>
+        <div>
+            {% if gp_count >= 2 %}
+            <form action="/study/start_cycle" method="post" style="display:inline;">
+                <input type="hidden" name="material_id" value="{{ m.id }}">
+                <button type="submit" class="btn btn-primary" style="background: #27ae60;">开始学习</button>
+            </form>
+            {% else %}
+            <span class="btn" style="background: #95a5a6; color: #fff; cursor: not-allowed;">需要至少 2 个语法点</span>
+            {% endif %}
         </div>
     </div>
-    {% endfor %}
+</div>
+{% endfor %}
 {% else %}
 <div class="upload-area">
     <form action="/materials/upload" method="post" enctype="multipart/form-data">
