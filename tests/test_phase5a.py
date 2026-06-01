@@ -737,13 +737,11 @@ def test_retry_flow_failure_to_success_shows_question(client, db, populated_mate
 # Phase 5A: _cancel_mastered_cycle_questions focus tests
 # =============================================================================
 
-def test_mastered_grammar_b_cancels_only_grammar_b_translation_slots(
+def test_mastered_grammar_b_as_current_target_resets_gb_slots(
     client, db, populated_material, mock_phase5a,
 ):
-    """Marking grammar B as mastered cancels only eligible GB translation slots.
-
-    GA translation slots must remain unaffected.
-    """
+    """Phase 5D-1: marking grammar B as mastered resets GB translation slots.
+    GA translation slots must remain answered (unaffected)."""
     mat = populated_material
     gp_a = db.query(GrammarPoint).filter(
         GrammarPoint.material_id == mat.id,
@@ -781,7 +779,7 @@ def test_mastered_grammar_b_cancels_only_grammar_b_translation_slots(
     mock_phase5a.side_effect = _gen_with_gp
     client.post("/study/generate_module")
 
-    # Now mark grammar B as mastered
+    # Now mark grammar B as mastered (current target → replacement path)
     client.post(f"/materials/{mat.id}/grammar/{gp_b.id}/toggle_mastered",
                 headers={"X-Requested-With": "XMLHttpRequest"})
 
@@ -790,33 +788,45 @@ def test_mastered_grammar_b_cancels_only_grammar_b_translation_slots(
         QuestionAttempt.cycle_id == cycle_id
     ).order_by(QuestionAttempt.id).all()
 
+    ga_answered = [
+        q for q in all_qs
+        if q.module_type == "grammar_a_translation"
+        and q.status == "answered"
+    ]
+    gb_reset = [
+        q for q in all_qs
+        if q.module_type == "grammar_b_translation"
+        and q.status == "planned"
+    ]
     ga_cancelled = [
         q for q in all_qs
         if q.module_type == "grammar_a_translation"
         and q.status == "cancelled_mastered"
     ]
-    gb_cancelled = [
-        q for q in all_qs
-        if q.module_type == "grammar_b_translation"
-        and q.status == "cancelled_mastered"
-    ]
 
-    # GB slots should be cancelled
-    assert len(gb_cancelled) >= 1, \
-        f"Expected at least 1 GB cancelled, got {len(gb_cancelled)}"
-    # GA slots must NOT be cancelled
+    # GA slots should remain answered (5), NOT cancelled
+    assert len(ga_answered) == 5, \
+        f"Expected 5 GA answered, got {len(ga_answered)}"
     assert len(ga_cancelled) == 0, \
         f"Expected 0 GA cancelled, got {len(ga_cancelled)}"
+    # GB slots should be reset to planned (5)
+    assert len(gb_reset) == 5, \
+        f"Expected at least 1 GB reset, got {len(gb_reset)}"
 
 
-def test_mastered_grammar_a_does_not_cancel_grammar_b_or_unrelated_mc_slots(
+def test_mastered_grammar_a_as_current_target_resets_and_replaces(
     client, db, populated_material, mock_phase5a,
 ):
-    """Marking grammar A as mastered cancels GA slots but not GB/MC slots."""
+    """Marking grammar A as mastered when it is a current cycle target resets GA translation
+    and GA MC distinction slots. GB and non-GA MC slots remain unchanged."""
     mat = populated_material
     gp_a = db.query(GrammarPoint).filter(
         GrammarPoint.material_id == mat.id,
         GrammarPoint.point_name == "〜てはいられない",
+    ).first()
+    gp_c = db.query(GrammarPoint).filter(
+        GrammarPoint.material_id == mat.id,
+        GrammarPoint.point_name == "〜たきり",
     ).first()
 
     # Start cycle, generate GA only (GB and MC stay planned)
@@ -825,7 +835,7 @@ def test_mastered_grammar_a_does_not_cancel_grammar_b_or_unrelated_mc_slots(
     mock_phase5a.side_effect = [MockTrans() for _ in range(5)]
     client.post("/study/generate_module")
 
-    # Mark grammar A as mastered
+    # Mark grammar A as mastered (current target → replacement path)
     client.post(f"/materials/{mat.id}/grammar/{gp_a.id}/toggle_mastered",
                 headers={"X-Requested-With": "XMLHttpRequest"})
 
@@ -834,28 +844,41 @@ def test_mastered_grammar_a_does_not_cancel_grammar_b_or_unrelated_mc_slots(
         QuestionAttempt.cycle_id == cycle_id
     ).order_by(QuestionAttempt.id).all()
 
-    ga_cancelled = [
+    ga_reset = [
         q for q in all_qs
         if q.module_type == "grammar_a_translation"
-        and q.status == "cancelled_mastered"
+        and q.status == "planned"
     ]
-    gb_cancelled = [
+    gb_reset = [
         q for q in all_qs
         if q.module_type == "grammar_b_translation"
-        and q.status == "cancelled_mastered"
+        and q.status == "planned"
     ]
-    mc_cancelled = [
-        q for q in all_qs
-        if q.module_type == "multiple_choice"
-        and q.status == "cancelled_mastered"
-    ]
+    mc_slots = [q for q in all_qs if q.module_type == "multiple_choice"]
 
-    # GA slots should be cancelled
-    assert len(ga_cancelled) >= 1, \
-        f"Expected >=1 GA cancelled, got {len(ga_cancelled)}"
-    # GB slots must NOT be cancelled
-    assert len(gb_cancelled) == 0, \
-        f"Expected 0 GB cancelled, got {len(gb_cancelled)}"
-    # MC slots must NOT be cancelled by grammar A mastered
-    assert len(mc_cancelled) == 0, \
-        f"Expected 0 MC cancelled, got {len(mc_cancelled)}"
+    # GA slots should be reset to planned (5 slots)
+    assert len(ga_reset) == 5, \
+        f"Expected 5 GA planned (reset), got {len(ga_reset)}"
+    # GA slots should be rebound to replacement grammar
+    for q in ga_reset:
+        assert q.target_grammar_id == gp_c.id, \
+            f"Expected target_grammar_id={gp_c.id}, got {q.target_grammar_id}"
+    # GB slots must NOT be reset (still planned from start)
+    assert len(gb_reset) == 5, \
+        f"Expected 5 GB planned (unchanged), got {len(gb_reset)}"
+    # GA MC distinction slots (first 2) should be reset to planned
+    assert mc_slots[0].status == "planned", \
+        f"GA MC slot 0 expected planned, got {mc_slots[0].status}"
+    assert mc_slots[1].status == "planned", \
+        f"GA MC slot 1 expected planned, got {mc_slots[1].status}"
+    # Remaining MC slots (2-8) are untouched (still planned from start)
+    for i in range(2, 9):
+        assert mc_slots[i].status == "planned", \
+            f"Non-GA MC slot {i} expected planned, got {mc_slots[i].status}"
+    # Verify cycle target was updated to replacement
+    cycle = db.query(StudyCycle).filter(StudyCycle.id == cycle_id).first()
+    assert cycle.grammar_a_id == gp_c.id, \
+        f"Expected grammar_a={gp_c.id}, got {cycle.grammar_a_id}"
+    # Verify gp_a is now mastered
+    db.refresh(gp_a)
+    assert gp_a.mastered is True

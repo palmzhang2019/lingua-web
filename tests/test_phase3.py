@@ -228,29 +228,39 @@ def test_skip_module_handles_planned_slots(client, db, populated_material, mock_
 
 
 def test_mastered_cancels_planned_future_slots(client, db, populated_material, mock_deepseek):
-    """Toggling mastered cancels planned slots for that grammar."""
+    """Phase 5D-1: toggling a current-cycle target triggers replacement, not cancellation."""
     from tests._phase5a_compat import start_cycle_and_generate_ga
     mat = populated_material
     gp_a = db.query(GrammarPoint).filter(
         GrammarPoint.material_id == mat.id
     ).first()
+    gp_c = db.query(GrammarPoint).filter(
+        GrammarPoint.material_id == mat.id,
+        GrammarPoint.point_name == "〜たきり",
+    ).first()
 
     start_cycle_and_generate_ga(client, mat.id)
 
-    # Toggle gp_a to mastered
+    # Toggle gp_a to mastered (current target → replacement path)
     client.post(f"/materials/{mat.id}/grammar/{gp_a.id}/toggle_mastered",
                 headers={"X-Requested-With": "XMLHttpRequest"})
 
     from app.db import SessionLocal as _SL
     _vdb = _SL()
     state = _vdb.query(SessionState).first()
-    cancelled = _vdb.query(QuestionAttempt).filter(
-        QuestionAttempt.cycle_id == state.current_cycle_id,
-        QuestionAttempt.status == "cancelled_mastered"
-    ).all()
+    cycle = _vdb.query(StudyCycle).filter(
+        StudyCycle.id == state.current_cycle_id
+    ).first()
+    gp_a_verified = _vdb.query(GrammarPoint).filter(
+        GrammarPoint.id == gp_a.id
+    ).first()
     _vdb.close()
 
-    assert len(cancelled) >= 1, "Expected at least 1 cancelled question"
+    # Verify: gp_a is now mastered
+    assert gp_a_verified.mastered is True, "Grammar A should be mastered"
+    # Verify: cycle target was replaced (grammar_a now points to the replacement)
+    assert cycle.grammar_a_id == gp_c.id, \
+        f"Expected grammar_a replaced with {gp_c.id}, got {cycle.grammar_a_id}"
 
 
 def test_historical_pre_phase3_cycle_renders(client, db):

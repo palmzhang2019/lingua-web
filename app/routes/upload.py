@@ -272,6 +272,55 @@ async def toggle_grammar_mastered(
     ).first()
     if not gp:
         return HTMLResponse("Grammar point not found", status_code=404)
+
+    # Phase 5D-1: If toggling TO mastered AND grammar is a current cycle target,
+    # attempt replacement transaction. Otherwise use existing simple toggle.
+    from app.routes.study import (
+        _is_current_cycle_target,
+        _find_eligible_replacement_grammar,
+        _execute_manual_mastered_replacement,
+        _build_no_replacement_html,
+        _build_replacement_html,
+    )
+
+    toggle_to_mastered = not gp.mastered
+    is_target, cycle, position = _is_current_cycle_target(db, gp.id) if toggle_to_mastered else (False, None, None)
+
+    if toggle_to_mastered and is_target and cycle:
+        # ---- Current cycle target: attempt replacement ----
+        replacement = _find_eligible_replacement_grammar(db, cycle, gp.id)
+        if replacement is None:
+            # No eligible replacement — reject the toggle, unchanged state
+            return templates.TemplateResponse(
+                request, "base.html",
+                {
+                    "content": _build_no_replacement_html(gp.point_name),
+                },
+                status_code=400,
+            )
+
+        # Execute the atomic replacement transaction
+        _execute_manual_mastered_replacement(db, cycle, gp, replacement)
+        pos_name: str = position or "grammar_a"
+
+        # Return replacement confirmation
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            # AJAX: return minimal HTML fragment
+            return HTMLResponse(
+                f"<div class='flash-success'>"
+                f"「{gp.point_name}」已标记掌握，已替换为「{replacement.point_name}」。</div>"
+            )
+
+        return templates.TemplateResponse(
+            request, "base.html",
+            {
+                "content": _build_replacement_html(
+                    gp.point_name, replacement.point_name, pos_name
+                ),
+            },
+        )
+
+    # ---- Original simple toggle for non-target or toggle-to-not-mastered ----
     gp.mastered = not gp.mastered
     db.commit()
 
