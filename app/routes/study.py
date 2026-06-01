@@ -100,6 +100,7 @@ def _compute_cycle_completion(db: Session, cycle: StudyCycle) -> dict:
     answered = sum(1 for q in all_qs if q.status == "answered")
     skipped_count = sum(1 for q in all_qs if q.status == "skipped")
     studied_count = sum(1 for q in all_qs if q.status == "studied")
+    cancelled_mastered_count = sum(1 for q in all_qs if q.status == "cancelled_mastered")
     pending = sum(1 for q in all_qs if q.status == "pending")
     correct = sum(1 for q in all_qs if q.is_correct)
 
@@ -117,6 +118,7 @@ def _compute_cycle_completion(db: Session, cycle: StudyCycle) -> dict:
             "pending": mod_pending,
             "skipped": mod_skipped,
             "studied": sum(1 for q in mod_qs if q.status == "studied"),
+            "cancelled_mastered": sum(1 for q in mod_qs if q.status == "cancelled_mastered"),
             "answered": sum(1 for q in mod_qs if q.status == "answered"),
             "done": mod_pending == 0,
         }
@@ -132,6 +134,7 @@ def _compute_cycle_completion(db: Session, cycle: StudyCycle) -> dict:
         "answered": answered,
         "skipped": skipped_count,
         "studied": studied_count,
+        "cancelled_mastered": cancelled_mastered_count,
         "pending": pending,
         "correct": correct,
         "accuracy": round(correct / answered * 100, 1) if answered > 0 else 0,
@@ -186,6 +189,95 @@ def _persist_usage_logs(db: Session, cycle_id: int | None = None) -> None:
         db.add(log)
     if records:
         db.commit()
+
+
+def _cancel_mastered_cycle_questions(
+    db: Session, grammar_point_name: str, grammar_point_id: int
+) -> None:
+    """Mark pending questions targeting a newly-mastered grammar as cancelled_mastered.
+
+    Called when the user toggles mastered=True during an active study cycle.
+    Answered questions are left unchanged. Pending translation and MC questions
+    whose associated grammar_point matches the newly-mastered grammar are cancelled.
+    Advances the session if the current question was cancelled.
+    """
+    from app.models import SessionState
+
+    state = db.query(SessionState).first()
+    if not state or not state.current_cycle_id:
+        return
+
+    all_qs = _get_sorted_cycle_questions(db, state.current_cycle_id)
+    grammar_point_name_lower = grammar_point_name.lower().strip().lstrip("〜")
+    changed = False
+
+    for i, q in enumerate(all_qs):
+        if q.status != "pending":
+            continue
+        payload = q.question_payload_json or {}
+        q_gp_name = (payload.get("grammar_point") or "").lower().strip().lstrip("〜")
+        # Check grammar_point field or grammar_point_id match
+        if q_gp_name == grammar_point_name_lower or q_gp_name == str(grammar_point_id):
+            q.status = "cancelled_mastered"
+            q.answered_at = datetime.datetime.utcnow()
+            changed = True
+
+    if changed:
+        db.commit()
+
+    # If the current question was cancelled, advance to next pending
+    if state.current_question_index < len(all_qs):
+        current_q = all_qs[state.current_question_index]
+        if current_q.status == "cancelled_mastered":
+            # Find next pending
+            next_pending = _first_pending_question_index(all_qs)
+            if next_pending is not None:
+                state.current_question_index = next_pending
+                state.current_module = all_qs[next_pending].module_type
+            else:
+                state.current_question_index = len(all_qs)
+                # Complete the cycle
+                cycle = db.query(StudyCycle).filter(
+                    StudyCycle.id == state.current_cycle_id
+                ).first()
+                if cycle:
+                    _compute_cycle_completion(db, cycle)
+            state.updated_at = datetime.datetime.utcnow()
+            db.commit()
+
+
+def _validate_mc_against_mastered(
+    mc_questions: list,
+    mastered_names: set[str],
+) -> list[bool]:
+    """Validate that no generated MC question contains mastered grammar.
+
+    Checks prompt text, all choices (A/B/C/D), and grammar_point field.
+    Returns a list of booleans (True=valid, False=contains mastered grammar).
+    """
+    normalized_mastered = {
+        name.lower().strip().lstrip("〜")
+        for name in mastered_names
+    }
+    results = []
+    for q in mc_questions:
+        texts_to_check = [
+            getattr(q, "prompt", "") or "",
+            getattr(q, "A", "") or "",
+            getattr(q, "B", "") or "",
+            getattr(q, "C", "") or "",
+            getattr(q, "D", "") or "",
+            getattr(q, "grammar_point", "") or "",
+        ]
+        combined = " ".join(texts_to_check).lower()
+        # Check if any mastered grammar name appears as a substring in the content
+        contaminated = any(
+            name in combined
+            for name in normalized_mastered
+            if name  # skip empty strings
+        )
+        results.append(not contaminated)
+    return results
 
 
 def _build_answer_feedback_html(
@@ -359,6 +451,42 @@ async def start_cycle(
             status_code=500,
         )
 
+    # ---------- Post-generation: validate MC against mastered grammar ----------
+    mastered_names = {
+        gp.point_name for gp in grammar_points if gp.mastered
+    }
+    mc_valid = _validate_mc_against_mastered(mc_questions, mastered_names)
+    if not all(mc_valid):
+        # Retry once with explicit constraint
+        constrained_prompt_extras = (
+            "\n\nCRITICAL RULE: The following grammar expressions must NOT appear "
+            "in ANY question prompt, choice, or distractor:\n"
+        ) + "\n".join(f"- {name}" for name in sorted(mastered_names))
+        from app.agents.generator import (
+            generate_multiple_choice as retry_generate_mc,
+        )
+        retry_mc = retry_generate_mc(
+            grammar_a, grammar_b, prioritized_review,
+        )
+        if retry_mc and len(retry_mc) >= 9:
+            mc_questions = retry_mc
+            mc_valid = _validate_mc_against_mastered(retry_mc, mastered_names)
+
+        if not all(mc_valid):
+            return templates.TemplateResponse(
+                request, "base.html",
+                {
+                    "content": (
+                        "<div class='card flash-error'>"
+                        "<strong>生成选择题包含已掌握的语法内容：</strong>"
+                        "系统检测到生成的选择题中包含了用户已标记为已掌握的语法表达式，"
+                        "重试后仍无法避免。请检查已掌握标记后重试。</div>"
+                        "<a href='/materials' class='btn btn-primary'>返回素材列表</a>"
+                    )
+                },
+                status_code=500,
+            )
+
     # ---------- Create study cycle ----------
     cycle = StudyCycle(
         started_at=datetime.datetime.utcnow(),
@@ -504,6 +632,7 @@ async def study_home(
                 "correct": stats["correct"],
                 "skipped": stats["skipped"],
                 "studied": stats["studied"],
+                "cancelled_mastered": stats["cancelled_mastered"],
                 "accuracy": stats["accuracy"],
                 "questions": all_qs,
                 "in_progress": False,
@@ -559,6 +688,7 @@ async def current_question(
                 "correct": stats["correct"],
                 "skipped": stats["skipped"],
                 "studied": stats["studied"],
+                "cancelled_mastered": stats["cancelled_mastered"],
                 "accuracy": stats["accuracy"],
                 "questions": all_qs,
                 "in_progress": False,
@@ -951,6 +1081,7 @@ async def study_progress(
             "correct": stats["correct"],
             "skipped": stats["skipped"],
             "studied": stats["studied"],
+            "cancelled_mastered": stats["cancelled_mastered"],
             "accuracy": stats["accuracy"],
             "questions": all_qs,
             "in_progress": not stats["is_done"],

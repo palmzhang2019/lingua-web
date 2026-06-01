@@ -33,7 +33,7 @@ Lingua Web 是一个自用日语学习 Web 原型，用三天时间完成了从�
 - **智能评分** — 翻译题由 DeepSeek 进行结构化语义评估（判断是否使用目标语法、语义是否可接受），选择题由 Python 进行确定性判定
 - **薄弱项追踪** — 自动记录每道**实际作答**的错题（跳过或已学过的题不记录）对应的语法薄弱项；同一语法点答错 2 次后自动激活；后续循环的复习题优先使用活跃薄弱项
 - **学习恢复与模块操作** — 未完成的循环可中断后精确恢复；支持跳过当前模块（不计入有效完成、不进入正确率分母、不产生薄弱项）和标记已学过（标记为有效完成）
-- **已掌握标记** — 上传后可在素材详情页将已掌握的语法/单词标记为「已掌握」，也可在学习过程中随时标记。标记后不影响历史成绩，但后续循环不再选用。
+- **已掌握标记** — 上传后可在素材详情页将已掌握的语法/单词标记为「已掌握」，也可在学习过程中随时标记。标记后不影响历史成绩；当前循环中未答的该语法相关题目自动取消，不计分、不产生薄弱项、可计入有效完成；后续循环不再选用该语法。
 - **成本追踪** — 记录所有 DeepSeek 和 OpenAI API 调用的 token 用量并估算成本
 
 ### 实际学习流程
@@ -241,6 +241,7 @@ Upload a TXT, Markdown, or PDF Japanese learning text (scanned PDFs are handled 
 - **Guided Study Cycle** — Deterministically pick two N2‑preferred grammar points. Generate explanations, 10 translation exercises (5 per grammar point), and 9 multiple‑choice questions (4 distinction + 5 review) — 19 questions in total.
 - **Intelligent Grading** — Translation answers are evaluated by DeepSeek for semantic acceptability and target‑grammar usage. Multiple‑choice answers are graded by deterministic Python comparison — no LLM overhead.
 - **Weak Point Tracking** — Only records weak‑point entries for questions the user actually **answered and got wrong** (skipped and studied questions are excluded). A grammar point becomes active after 2 errors; review questions prioritize active weak points.
+- **Mastered Marking** — Mark grammar/vocabulary items as mastered from the material detail page or during study. Historical results are preserved; pending questions for the mastered grammar in the current cycle are cancelled without affecting scores or weak points, and count toward valid completion. Mastered items are excluded from future new cycles.
 - **Session Resume and Module Actions** — Resume interrupted study at the exact pending question. Skip a module (completion is marked invalid, skipped questions never enter accuracy denominator or create weak points) or mark it as already studied (completion counts as valid with no weak points).
 - **Cost Measurement** — Every DeepSeek API call is logged with its token counts for cost estimation.
 

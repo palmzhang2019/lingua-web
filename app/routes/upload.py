@@ -273,6 +273,11 @@ async def toggle_grammar_mastered(
     gp.mastered = not gp.mastered
     db.commit()
 
+    # Phase 1b: if mastered was just set to True, cancel related pending cycle questions
+    if gp.mastered:
+        from app.routes.study import _cancel_mastered_cycle_questions
+        _cancel_mastered_cycle_questions(db, gp.point_name, gp.id)
+
     # AJAX (inline JS fetch): return just the card fragment — no body swap, no scroll jump
     if request.headers.get("X-Requested-With") == "XMLHttpRequest":
         return templates.TemplateResponse(
