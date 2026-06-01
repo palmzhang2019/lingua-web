@@ -10,20 +10,33 @@
     {% else %}
     <h2>🎉 学习完成！</h2>
     {% if is_valid_completion %}
-    <p style="color: #27ae60; font-size: 1.1rem;">✅ 有效完成（所有模块已完整作答或标记为已学过）</p>
+    <p style="color: #27ae60; font-size: 1.1rem;">✅ 有效完成（所有模块已完整作答）</p>
     {% else %}
     <p style="color: #e67e22; font-size: 1.1rem;">⚠️ 已完成但部分模块被跳过，本次不计入有效完成。</p>
     {% endif %}
     {% endif %}
 
+    {% if answered > 0 %}
     <div style="font-size: 3rem; margin: 1.5rem 0; color: {% if accuracy >= 70 %}#27ae60{% elif accuracy >= 40 %}#f39c12{% else %}#e74c3c{% endif %};">
         {{ accuracy }}%
     </div>
     <p style="font-size: 1.1rem;">
-        正确 <strong>{{ correct }}</strong> / {{ total }} 题
+        正确 <strong>{{ correct }}</strong> / {{ answered }} 题（实际作答）
     </p>
+    {% else %}
+    <div style="font-size: 1.5rem; margin: 1.5rem 0; color: #7f8c8d;">
+        无实际作答记录
+    </div>
+    <p style="font-size: 1.1rem;">
+        所有题目被跳过或标记为已学过，无可计算的正确率。
+    </p>
+    {% endif %}
+
     <p class="meta">
-        已答：{{ answered }} 题 | 总题：{{ total }} 题
+        已答：{{ answered }} 题
+        | 跳过：{{ skipped }} 题
+        | 已学过：{{ studied }} 题
+        | 总题：{{ total }} 题
     </p>
 </div>
 
@@ -46,7 +59,17 @@
                 {% else %}选择题
                 {% endif %}
             </td>
-            <td>{{ '✅' if q.is_correct else '❌' }}</td>
+            <td>
+                {% if q.status == "answered" %}
+                    {{ '✅' if q.is_correct else '❌' }}
+                {% elif q.status == "skipped" %}
+                    ⏭️ 已跳过
+                {% elif q.status == "studied" %}
+                    📖 已学过
+                {% else %}
+                    ⏳ 未作答
+                {% endif %}
+            </td>
             <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">
                 {{ q.user_answer[:60] if q.user_answer else '-' }}
             </td>

@@ -1,18 +1,13 @@
 """Database engine and session management for Lingua Web."""
 
-import os
 from pathlib import Path
 
 from sqlalchemy import create_engine, text as sa_text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
-# SQLite database lives under data/ and is gitignored.
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+from app.config import DATABASE_URL, DATA_DIR
+
 DATA_DIR.mkdir(exist_ok=True)
-DATABASE_URL = os.getenv(
-    "LINGUA_DATABASE_URL",
-    f"sqlite:///{DATA_DIR / 'lingua.db'}",
-)
 
 engine = create_engine(
     DATABASE_URL,

@@ -1,5 +1,17 @@
-"""P2.1 final closure verification: page-slicing gate, quality gate, full tests."""
-import os, sys, json, re
+"""P2.1 final closure verification: page-slicing gate, quality gate, full tests.
+Uses an isolated temporary database — never touches data/lingua.db.
+"""
+import os, sys, json, re, tempfile, uuid, sqlite3
+from pathlib import Path
+from io import BytesIO
+
+# Must set env vars BEFORE any app module imports
+os.environ["LINGUA_TESTING"] = "1"
+_tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+_tmp_db.close()
+os.environ["LINGUA_DATABASE_URL"] = f"sqlite:///{_tmp_db.name}"
+
+# Now safe to import app modules (they'll use the temp DB config)
 sys.path.insert(0, "/home/pompeo_z/workspace/lingua-web")
 os.chdir("/home/pompeo_z/workspace/lingua-web")
 
@@ -12,19 +24,24 @@ from app.services.material_parser import (
     _get_pdf_page_count, _slice_pdf_pages,
 )
 from app.pdf_vision import is_available, extract_from_pdf_pages
-from app.db import init_db
-from fastapi.testclient import TestClient
+from app.db import init_db, engine
 from app.main import app
-import sqlite3, tempfile, uuid
-from pathlib import Path
-from io import BytesIO
+from fastapi.testclient import TestClient
+
+# Initialize schema in temp DB
+init_db()
 
 client = TestClient(app)
 results = []
 
 # ===== 0. Baseline =====
 results.append(("Imports OK", True, ""))
-init_db()
+assert os.environ.get("LINGUA_DATABASE_URL") == f"sqlite:///{_tmp_db.name}", "Temp DB not set"
+
+# Verify we are NOT using data/lingua.db
+_db_url = os.environ.get("LINGUA_DATABASE_URL", "")
+assert "data/lingua.db" not in _db_url, "Test is using real DB!"
+results.append(("Temp DB isolation confirmed", True, f"db={_tmp_db.name}"))
 
 # ===== 1. TXT/MD regression =====
 p = parse_uploaded_material("t.txt", b"Test")
@@ -57,35 +74,33 @@ results.append(("OpenAI key available", oa_ok, ""))
 
 # ===== 4. Real PDF quality gate (pages 3-5) =====
 if oa_ok:
-    print("\n=== Quality gate: OpenAI vision on pages 3-5 (bounded slice) ===")
+    print("\n=== Quality gate: OpenAI vision on pages 3-5 (bounded slice, temp DB) ===")
     with tempfile.TemporaryDirectory() as tmpdir:
         sliced_path = Path(tmpdir) / "sliced.pdf"
         sliced_path.write_bytes(sliced)
         result = extract_from_pdf_pages(str(sliced_path), 3, 5)
-    
+
     assert result is not None, "OpenAI returned None"
     print(f"  Grammar items: {len(result.grammar_items)}")
     print(f"  Vocab items: {len(result.vocab_items)}")
     print(f"  Raw response: {result.raw_response[:600]}...")
-    
+
     results.append(("Vision returned items", len(result.grammar_items) > 0 or len(result.vocab_items) > 0, ""))
-    
+
     # Quality gate: check each grammar item
     quality_pass = True
     for g in result.grammar_items:
         print(f"\n  --- Grammar: {g.point_name} (p{g.source_page}) ---")
         print(f"    Explanation: {g.explanation_zh}")
         print(f"    Example: {g.example_from_page}")
-        # Check: has actual content
         if not g.point_name.strip() or not g.example_from_page.strip():
             quality_pass = False
             print(f"    ❌ Empty content")
         else:
             print(f"    ✅ Has name and example")
-    
+
     results.append(("Quality gate: items have content", quality_pass, f"{len(result.grammar_items)} items"))
-    
-    # Check for suspicious items
+
     suspicious = []
     for g in result.grammar_items:
         name = g.point_name
@@ -96,28 +111,26 @@ if oa_ok:
         for s in suspicious:
             print(f"    - {s}")
     results.append(("Quality gate: no critical issues flagged", True, f"⚠️ suspicious={len(suspicious)} (reviewed, acceptable)"))
-    
+
     has_2_gp = len(result.grammar_items) >= 2
     results.append(("≥2 grammar points for study", has_2_gp, f"count={len(result.grammar_items)}"))
-    
+
     if has_2_gp and quality_pass:
         print("\n  ✅ Quality gate PASSED")
 
-# ===== 5. Full E2E upload =====
+# ===== 5. Full E2E upload (into temp DB) =====
 if oa_ok:
-    print("\n=== E2E upload via HTTP ===")
+    print("\n=== E2E upload via HTTP (into temp DB) ===")
     resp = client.post("/materials/upload", data={"start_page": "3", "end_page": "5"}, files={
         "file": ("011-020.pdf", pdf_full, "application/pdf")
     })
-    # TestClient follows redirect by default; check DB for new material
-    conn = sqlite3.connect("data/lingua.db")
+    # TestClient follows redirect; inspect temp DB
+    conn = sqlite3.connect(_tmp_db.name)
     cur = conn.cursor()
     cur.execute("SELECT MAX(id) FROM materials")
     mid = cur.fetchone()[0]
     results.append(("PDF upload created material", mid is not None, f"material_id={mid}"))
     if mid:
-        conn = sqlite3.connect("data/lingua.db")
-        cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM grammar_points WHERE material_id=?", (mid,))
         gp_db = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM vocab_items WHERE material_id=?", (mid,))
@@ -127,13 +140,12 @@ if oa_ok:
         results.append(("Extraction method", method == "openai_pdf_vision", f"method={method}"))
         results.append(("GP in DB", gp_db >= 2, f"count={gp_db}"))
         results.append(("Vocab in DB", vc_db >= 1, f"count={vc_db}"))
-        
-        # Check page grounding
+
         cur.execute("SELECT source_page FROM grammar_points WHERE material_id=? LIMIT 1", (mid,))
         sp = cur.fetchone()
         results.append(("Page grounding present", sp and sp[0] is not None, f"page={sp[0] if sp else None}"))
         conn.close()
-        
+
         detail = client.get(f"/materials/{mid}")
         results.append(("Detail page", detail.status_code == 200, ""))
         has_study = "begin" in detail.text.lower() or "27ae60" in detail.text or "开始学习" in detail.text
@@ -167,7 +179,7 @@ results.append(("Study page", resp.status_code == 200, ""))
 resp = client.get("/weak_points")
 results.append(("Weak points page", resp.status_code == 200, ""))
 
-# ===== 8. TXT upload regression =====
+# ===== 8. TXT upload regression (into temp DB) =====
 resp = client.post("/materials/upload", files={
     "file": ("regress.txt", b"Test Japanese material for grammar.", "text/plain")
 })
@@ -175,7 +187,7 @@ results.append(("TXT upload regression", resp.status_code in (200, 303), f"statu
 
 # ===== Results =====
 print("\n" + "=" * 60)
-print("P2.1 FINAL CLOSURE VERIFICATION")
+print("P2.1 FINAL CLOSURE VERIFICATION (TEMP DB)")
 print("=" * 60)
 all_pass = True
 for name, ok, detail in results:
@@ -187,4 +199,8 @@ for name, ok, detail in results:
         print(f"         {detail}")
 print("=" * 60)
 print(f"OVERALL: {'ALL PASSED' if all_pass else 'SOME FAILED'}")
+
+# Cleanup temp DB
+os.unlink(_tmp_db.name)
+
 sys.exit(0 if all_pass else 1)
