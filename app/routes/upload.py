@@ -11,12 +11,11 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Material, GrammarPoint, VocabItem, CycleMaterial, StudyCycle
 from app.agents.extractor import extract_grammar_points, extract_vocab
+from app.config import MAX_UPLOAD_SIZE_MB, MAX_UPLOAD_BYTES
 from app.services.material_parser import (
     parse_uploaded_material,
     parse_pdf_with_pages,
     is_supported_extension,
-    MAX_PDF_BYTES,
-    MAX_PDF_PAGES,
     _get_pdf_page_count,
 )
 
@@ -38,7 +37,10 @@ async def list_materials(request: Request, db: Session = Depends(get_db)):
         material_list.append({"material": m, "grammar_count": gp_count})
     return templates.TemplateResponse(
         request, "materials.html",
-        {"materials": material_list},
+        {
+            "materials": material_list,
+            "max_upload_size_mb": MAX_UPLOAD_SIZE_MB,
+        },
     )
 
 
@@ -66,13 +68,18 @@ async def material_detail(
         .all()
     )
 
+    pdf_truncated = request.query_params.get("pdf_truncated")
+    context = {
+        "material": material,
+        "grammar_points": grammar_points,
+        "vocab_items": vocab_items,
+    }
+    if pdf_truncated:
+        context["pdf_truncated_total"] = pdf_truncated
+
     return templates.TemplateResponse(
         request, "material_detail.html",
-        {
-            "material": material,
-            "grammar_points": grammar_points,
-            "vocab_items": vocab_items,
-        },
+        context,
     )
 
 
@@ -80,8 +87,6 @@ async def material_detail(
 async def upload_material(
     request: Request,
     file: UploadFile = File(...),
-    start_page: int = Form(1),
-    end_page: int = Form(1),
     db: Session = Depends(get_db),
 ):
     """Upload a TXT/MD/PDF material file, persist it, and trigger extraction."""
@@ -93,13 +98,29 @@ async def upload_material(
             status_code=400,
         )
 
+    # =====================================================================
+    # Bounded read + size check — reject oversize without unbounded memory
+    # =====================================================================
     try:
-        raw = await file.read()
+        raw = await file.read(MAX_UPLOAD_BYTES + 1)
     except Exception as exc:
         return HTMLResponse(f"Failed to read uploaded file: {exc}", status_code=400)
 
+    if len(raw) > MAX_UPLOAD_BYTES:
+        # Read no further — oversized, reject immediately
+        file_size_approx = len(raw) / (1024 * 1024)
+        return HTMLResponse(
+            f"该文件为 {file_size_approx:.1f} MB，超过最大允许大小 {MAX_UPLOAD_SIZE_MB} MB。",
+            status_code=400,
+        )
+
+    # File is within limits — read any trailing bytes for complete content
+    more = await file.read()
+    if more:
+        raw = raw + more
+
     # =====================================================================
-    # TXT / Markdown path (unchanged)
+    # TXT / Markdown path
     # =====================================================================
     if suffix in (".txt", ".md"):
         try:
@@ -129,44 +150,25 @@ async def upload_material(
         return RedirectResponse(url=f"/materials/{material.id}", status_code=303)
 
     # =====================================================================
-    # PDF path (OpenAI gpt-5.4-mini vision)
+    # PDF path — automatic first-30-page processing
     # =====================================================================
     if suffix == ".pdf":
-        # File size check
-        if len(raw) > MAX_PDF_BYTES:
-            return HTMLResponse(
-                f"PDF 文件超过 {MAX_PDF_BYTES // (1024*1024)} MB。"
-                f"当前版本请上传较小文件，或先截取需要学习的页面。",
-                status_code=400,
-            )
-
-        # Page count
-        page_count = _get_pdf_page_count(raw)
-        if page_count is None:
+        # Get PDF total page count
+        total_pages = _get_pdf_page_count(raw)
+        if total_pages is None:
             return HTMLResponse("无法读取该 PDF 的页数。请确认文件可读取。", status_code=400)
 
-        # Page range validation
-        if start_page < 1 or end_page > page_count or end_page < start_page:
-            return HTMLResponse(
-                f"页码范围无效。文件共 {page_count} 页，"
-                f"每次最多分析 {MAX_PDF_PAGES} 页。",
-                status_code=400,
-            )
+        # Process at most the first 30 pages
+        pages_to_process = min(total_pages, 30)
 
-        if (end_page - start_page + 1) > MAX_PDF_PAGES:
-            return HTMLResponse(
-                f"每次最多分析 {MAX_PDF_PAGES} 页。请缩小页码范围。",
-                status_code=400,
-            )
-
-        # Run OpenAI PDF vision extraction
-        parsed = parse_pdf_with_pages(raw, file.filename or "untitled", start_page, end_page)
+        # Run OpenAI PDF vision extraction on the determined page range
+        parsed = parse_pdf_with_pages(raw, file.filename or "untitled", 1, pages_to_process)
 
         if parsed.warnings:
             return HTMLResponse(" ".join(parsed.warnings), status_code=400)
 
         if not parsed.content_text.strip():
-            return HTMLResponse("无法从所选 PDF 页面提取可学习的日语内容。", status_code=400)
+            return HTMLResponse("无法从该 PDF 提取可学习的日语内容。", status_code=400)
 
         # Persist material
         material = Material(
@@ -175,8 +177,8 @@ async def upload_material(
             source_type="pdf",
             language_code="ja",
             uploaded_at=datetime.datetime.utcnow(),
-            source_page_start=start_page,
-            source_page_end=end_page,
+            source_page_start=1,
+            source_page_end=pages_to_process,
             extraction_method="openai_pdf_vision",
         )
         db.add(material)
@@ -185,6 +187,13 @@ async def upload_material(
 
         # Persist grammar/vocab from OpenAI vision result
         _persist_pdf_vision_items(db, material.id, parsed.grammar_items, parsed.vocab_items)
+
+        # For PDFs with more than 30 pages, append truncation notice to redirect
+        if total_pages > 30:
+            return RedirectResponse(
+                url=f"/materials/{material.id}?pdf_truncated={total_pages}",
+                status_code=303,
+            )
 
         return RedirectResponse(url=f"/materials/{material.id}", status_code=303)
 

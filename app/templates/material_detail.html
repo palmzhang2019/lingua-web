@@ -2,6 +2,12 @@
 {% block title %}{{ material.filename }} — Lingua Web{% endblock %}
 {% block content %}
 
+{% if pdf_truncated_total %}
+<div class="card flash" style="margin-bottom: 1rem;">
+    📄 该 PDF 共 <strong>{{ pdf_truncated_total }}</strong> 页，本次已处理前 <strong>30</strong> 页。
+</div>
+{% endif %}
+
 <nav style="margin: 1rem 0;">
     <a href="/materials">← 返回素材列表</a>
 </nav>

@@ -11,29 +11,33 @@
     <form action="/materials/upload" method="post" enctype="multipart/form-data">
         <p><strong>上传日语学习素材</strong></p>
         <p style="color:#7f8c8d; font-size:0.85rem;">
-            支持 .txt、.md 和 .pdf（PDF 使用 AI 视觉理解，每次最多 10 页，文件最大 10 MB）
+            支持 .txt、.md 和 .pdf（PDF 使用 AI 视觉理解，自动处理前 30 页，文件最大 {{ max_upload_size_mb }} MB）
         </p>
-        <input type="file" name="file" id="file-input" accept=".txt,.md,.pdf" required onchange="togglePageRange()">
+        <input type="file" name="file" id="file-input" accept=".txt,.md,.pdf" required
+               data-max-upload-size="{{ max_upload_size_mb }}"
+               onchange="validateFileSize(this);">
         <br>
-        <div id="pdf-page-range" style="display:none; margin-top:0.5rem;">
-            <label>页码范围：</label>
-            <input type="number" name="start_page" value="1" min="1" style="width:70px;">
-            <span> — </span>
-            <input type="number" name="end_page" value="1" min="1" style="width:70px;">
-            <span style="color:#7f8c8d; font-size:0.85rem;">（每次最多 10 页）</span>
-        </div>
+        <div id="file-size-error" style="color:#e74c3c; font-size:0.9rem; margin-top:0.25rem; display:none;"></div>
         <br>
         <button type="submit" class="btn btn-primary">上传并提取</button>
     </form>
 </div>
 <script>
-function togglePageRange() {
-    const input = document.getElementById('file-input');
-    const range = document.getElementById('pdf-page-range');
-    if (input.files.length > 0 && input.files[0].name.toLowerCase().endsWith('.pdf')) {
-        range.style.display = 'block';
+function validateFileSize(input) {
+    const errorEl = document.getElementById('file-size-error');
+    if (input.files.length === 0) {
+        errorEl.style.display = 'none';
+        return;
+    }
+    const maxMb = parseFloat(input.dataset.maxUploadSize);
+    const file = input.files[0];
+    const fileSizeMb = file.size / (1024 * 1024);
+    if (fileSizeMb > maxMb) {
+        errorEl.textContent = '该文件为 ' + fileSizeMb.toFixed(1) + ' MB，超过最大允许大小 ' + maxMb + ' MB。';
+        errorEl.style.display = 'block';
+        input.value = '';
     } else {
-        range.style.display = 'none';
+        errorEl.style.display = 'none';
     }
 }
 </script>
@@ -136,29 +140,33 @@ function updateMultiCount() {
         <p><strong>欢迎使用 Lingua Web 🎉</strong></p>
         <p>还没有上传任何素材。上传第一篇日语学习素材开始学习吧。</p>
         <p style="color:#7f8c8d; font-size:0.85rem;">
-            支持 .txt、.md 和 .pdf（PDF 使用 AI 视觉理解，每次最多 10 页，文件最大 10 MB）
+            支持 .txt、.md 和 .pdf（PDF 使用 AI 视觉理解，自动处理前 30 页，文件最大 {{ max_upload_size_mb }} MB）
         </p>
-        <input type="file" name="file" id="file-input-empty" accept=".txt,.md,.pdf" required onchange="togglePageRangeEmpty()">
+        <input type="file" name="file" id="file-input-empty" accept=".txt,.md,.pdf" required
+               data-max-upload-size="{{ max_upload_size_mb }}"
+               onchange="validateFileSizeEmpty(this);">
         <br>
-        <div id="pdf-page-range-empty" style="display:none; margin-top:0.5rem;">
-            <label>页码范围：</label>
-            <input type="number" name="start_page" value="1" min="1" style="width:70px;">
-            <span> — </span>
-            <input type="number" name="end_page" value="1" min="1" style="width:70px;">
-            <span style="color:#7f8c8d; font-size:0.85rem;">（每次最多 10 页）</span>
-        </div>
+        <div id="file-size-error-empty" style="color:#e74c3c; font-size:0.9rem; margin-top:0.25rem; display:none;"></div>
         <br>
         <button type="submit" class="btn btn-primary">上传并提取</button>
     </form>
 </div>
 <script>
-function togglePageRangeEmpty() {
-    const input = document.getElementById('file-input-empty');
-    const range = document.getElementById('pdf-page-range-empty');
-    if (input.files.length > 0 && input.files[0].name.toLowerCase().endsWith('.pdf')) {
-        range.style.display = 'block';
+function validateFileSizeEmpty(input) {
+    const errorEl = document.getElementById('file-size-error-empty');
+    if (input.files.length === 0) {
+        errorEl.style.display = 'none';
+        return;
+    }
+    const maxMb = parseFloat(input.dataset.maxUploadSize);
+    const file = input.files[0];
+    const fileSizeMb = file.size / (1024 * 1024);
+    if (fileSizeMb > maxMb) {
+        errorEl.textContent = '该文件为 ' + fileSizeMb.toFixed(1) + ' MB，超过最大允许大小 ' + maxMb + ' MB。';
+        errorEl.style.display = 'block';
+        input.value = '';
     } else {
-        range.style.display = 'none';
+        errorEl.style.display = 'none';
     }
 }
 </script>

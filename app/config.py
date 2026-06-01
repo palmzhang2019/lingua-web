@@ -12,6 +12,13 @@ import os
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# Upload limits
+# ---------------------------------------------------------------------------
+# Maximum single-file upload size (in MB). Shared across all supported file types.
+MAX_UPLOAD_SIZE_MB = 10
+MAX_UPLOAD_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
+# ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
