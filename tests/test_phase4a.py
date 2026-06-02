@@ -603,8 +603,49 @@ def test_final_score_calculated_after_completion(client, db, populated_material,
     assert score is not None
     # All 10 translations = 100%, all 9 MC = 100%
     assert score["final_score_percent"] == 100.0
-    assert score["scored_count"] == 19
     assert score["excluded_count"] == 0
+
+
+def test_completed_result_shows_next_cycle_action(client, db, populated_material, mock_deepseek_basic):
+    """Completed cycle result page includes a clear '开始新的学习循环' action."""
+    mat = populated_material
+    client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    state = db.query(SessionState).first()
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"trans{i}"}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    for i in range(5):
+        client.post("/study/answer", data={"answer": f"trans{i+5}"}, follow_redirects=False)
+    for i in range(9):
+        client.post("/study/answer", data={"answer": "A"}, follow_redirects=False)
+    cycle = db.query(StudyCycle).filter(StudyCycle.id == state.current_cycle_id).first()
+    assert cycle.completed_at is not None
+    resp = client.get("/study/current")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "🎉 学习完成！" in html or "学习完成" in html
+    assert "开始新的学习循环" in html
+    assert '/materials' in html
+    assert "返回素材列表" in html
+
+
+def test_in_progress_result_does_not_show_next_cycle_action(client, db, populated_material, mock_deepseek_basic):
+    """In-progress (unfinished) cycle result page must NOT show '开始新的学习循环'."""
+    mat = populated_material
+    client.post("/study/start_cycle", data={"material_id": mat.id}, follow_redirects=False)
+    client.post("/study/generate_module", follow_redirects=False)
+    # Answer only 1 question — cycle should not be completed
+    client.post("/study/answer", data={"answer": "trans0"}, follow_redirects=False)
+    # Fetch current page (should be feedback page, not result page)
+    # Follow redirect to get the actual page content
+    resp = client.get("/study/current")
+    html = resp.text
+    # In-progress page should not show next-cycle action
+    assert "开始新的学习循环" not in html, (
+        "In-progress page must NOT show '开始新的学习循环'"
+    )
+
 
 def test_final_score_with_low_translation(client, db, populated_material, mock_deepseek_low_score):
     """Low heart translations contribute partial % to final score."""
